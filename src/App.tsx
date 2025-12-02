@@ -1009,50 +1009,63 @@ export default function TimeFlowApp() {
       const style = document.createElement('style');
       style.id = 'dark-mode-styles';
       style.innerHTML = `
-        /* Base Backgrounds */
+        /* --- BASICS --- */
         .dark body { background-color: #000000 !important; }
         .dark .bg-white { background-color: #111827 !important; color: #e5e7eb !important; border-color: #374151 !important; }
         .dark .bg-gray-50, .dark .bg-gray-100 { background-color: #1f2937 !important; border-color: #374151 !important; }
         
-        /* Text Adjustments */
+        /* --- TEXT --- */
         .dark .text-gray-900 { color: #f9fafb !important; }
         .dark .text-gray-800, .dark .text-gray-700 { color: #e5e7eb !important; }
         .dark .text-gray-600, .dark .text-gray-500 { color: #9ca3af !important; }
         .dark .text-gray-400 { color: #6b7280 !important; }
         
-        /* Form Elements */
+        /* --- INTERACTIVE ELEMENTS --- */
         .dark input, .dark select, .dark textarea { background-color: #374151 !important; color: white !important; border-color: #4b5563 !important; }
         .dark .shadow-sm, .dark .shadow-xl { box-shadow: none !important; }
-
-        /* --- COLORED CARDS OVERRIDES --- */
         
-        /* Green (Gain, Hobbies Success) */
+        /* Fix: Weekly Roadmap Hover State */
+        .dark .hover\\:bg-gray-50:hover { background-color: #374151 !important; }
+        .dark .hover\\:bg-blue-50:hover { background-color: #1e3a8a !important; }
+
+        /* --- COLORED CARDS & BADGES OVERRIDES --- */
+
+        /* PURPLE (Reward Mode, Fixed Time Badge, Reward Schedule) */
+        .dark .bg-purple-50 { background-color: #581c87 !important; border-color: #6b21a8 !important; }
+        .dark .bg-purple-100 { background-color: #4c1d95 !important; color: #e9d5ff !important; } /* <--- Fixes Fixed Time Badge */
+        .dark .text-purple-600, .dark .text-purple-700, .dark .text-purple-800, .dark .text-purple-900 { color: #d8b4fe !important; }
+
+        /* GREEN (Gain, Ongoing Badge, Success) */
         .dark .bg-green-50 { background-color: #064e3b !important; border-color: #065f46 !important; }
+        .dark .bg-green-100 { background-color: #14532d !important; color: #dcfce7 !important; } /* <--- Fixes Ongoing Badge */
         .dark .text-green-600, .dark .text-green-700, .dark .text-green-800 { color: #6ee7b7 !important; }
 
-        /* Red (Debt) */
+        /* ORANGE (Developer Mode, Overlap Badge) */
+        .dark .bg-orange-50 { background-color: #451a03 !important; border-color: #78350f !important; }
+        .dark .bg-orange-100 { background-color: #7c2d12 !important; color: #ffedd5 !important; } /* <--- Fixes Overlap Badge */
+        .dark .text-orange-600, .dark .text-orange-800 { color: #fdba74 !important; }
+
+        /* RED (Debt) */
         .dark .bg-red-50 { background-color: #7f1d1d !important; border-color: #991b1b !important; }
         .dark .text-red-500, .dark .text-red-600 { color: #fca5a5 !important; }
 
-        /* Purple (Reward Mode, Reward Schedule, Strict Scheduling) */
-        .dark .bg-purple-50 { background-color: #581c87 !important; border-color: #6b21a8 !important; }
-        .dark .text-purple-600, .dark .text-purple-700, .dark .text-purple-800, .dark .text-purple-900 { color: #d8b4fe !important; }
-
-        /* Orange (Developer Mode, Overlap) */
-        .dark .bg-orange-50 { background-color: #451a03 !important; border-color: #78350f !important; }
-        .dark .text-orange-600, .dark .text-orange-800 { color: #fdba74 !important; }
-
-        /* Pink (Hobby Cards) */
-        .dark .bg-pink-50 { background-color: #831843 !important; border-color: #9d174d !important; }
-        .dark .text-pink-600, .dark .text-pink-800 { color: #f9a8d4 !important; }
-
-        /* Blue (Info Cards) */
+        /* BLUE (Info Cards) */
         .dark .bg-blue-50 { background-color: #172554 !important; border-color: #1e3a8a !important; }
         .dark .text-blue-600 { color: #93c5fd !important; }
-        
-        /* Yellow/Amber (Alerts) */
+
+        /* AMBER/YELLOW (Adaptive Badge) */
         .dark .bg-yellow-50, .dark .bg-amber-50 { background-color: #422006 !important; border-color: #713f12 !important; }
+        .dark .bg-amber-100 { background-color: #78350f !important; color: #fef3c7 !important; }
         .dark .text-yellow-800, .dark .text-amber-800 { color: #fde047 !important; }
+        
+        /* PINK (Hobby) */
+        .dark .bg-pink-50 { background-color: #831843 !important; border-color: #9d174d !important; }
+        .dark .text-pink-600, .dark .text-pink-800 { color: #f9a8d4 !important; }
+        
+        /* INDIGO (Revision) */
+        .dark .bg-indigo-50 { background-color: #312e81 !important; border-color: #3730a3 !important; }
+        .dark .bg-indigo-100 { background-color: #3730a3 !important; color: #e0e7ff !important; }
+        .dark .text-indigo-600, .dark .text-indigo-700 { color: #818cf8 !important; }
       `;
       document.head.appendChild(style);
     } else {
