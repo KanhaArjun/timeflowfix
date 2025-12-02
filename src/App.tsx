@@ -929,7 +929,7 @@ function CategoryBadge({ catId, data }: { catId: string, data: UserData }) {
 
 export default function TimeFlowApp() {
   const [data, setData] = useState<UserData>(INITIAL_DATA);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'goals' | 'categories' | 'stats' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'goals' | 'categories' | 'stats' | 'settings' | 'bad_habits'>('dashboard');
   const [dashboardView, setDashboardView] = useState<'daily' | 'weekly'>('daily');
   const [rewardMode, setRewardMode] = useState<boolean>(false);
   const [showConfetti, setShowConfetti] = useState(false);
@@ -1820,7 +1820,6 @@ const BadHabitsView = () => {
                                         const d = new Date();
                                         d.setDate(d.getDate() - (89 - i));
                                         const dateStr = d.toISOString().split('T')[0];
-                                        const createDateStr = new Date(habit.createdAt).toISOString().split('T')[0];
                                         
                                         // Check if a relapse happened this day
                                         const relapsed = data.logs.some(l => 
