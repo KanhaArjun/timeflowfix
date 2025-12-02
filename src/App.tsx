@@ -95,6 +95,7 @@ interface UserData {
     peakStartHour: number; 
     peakEndHour: number;   
     allowNotifications: boolean;
+darkMode: boolean;
     simulatedDay?: number;
     simulatedHour?: number; 
   };
@@ -182,6 +183,7 @@ const INITIAL_DATA: UserData = {
     peakStartHour: 9, 
     peakEndHour: 12,  
     allowNotifications: false,
+darkMode: false,
     simulatedDay: undefined,
     simulatedHour: undefined
   },
@@ -1000,6 +1002,29 @@ export default function TimeFlowApp() {
 
   const dailySchedule = dailyData.schedule;
   const dailyHobbyStatus = dailyData.hobbyStatus;
+// --- DARK MODE SYSTEM ---
+  useEffect(() => {
+    if (data.settings.darkMode) {
+      document.documentElement.classList.add('dark');
+      // Inject global overrides for "Lazy Dark Mode"
+      const style = document.createElement('style');
+      style.id = 'dark-mode-styles';
+      style.innerHTML = `
+        .dark body { background-color: #111827 !important; }
+        .dark .bg-white { background-color: #1f2937 !important; color: #f3f4f6 !important; border-color: #374151 !important; }
+        .dark .bg-gray-50, .dark .bg-gray-100 { background-color: #111827 !important; border-color: #374151 !important; }
+        .dark .text-gray-900, .dark .text-gray-800, .dark .text-gray-700 { color: #f9fafb !important; }
+        .dark .text-gray-600, .dark .text-gray-500, .dark .text-gray-400 { color: #9ca3af !important; }
+        .dark .bg-white input, .dark .bg-white select, .dark textarea { background-color: #374151 !important; color: white !important; border-color: #4b5563 !important; }
+        .dark .shadow-sm, .dark .shadow-xl { box-shadow: none !important; }
+      `;
+      document.head.appendChild(style);
+    } else {
+      document.documentElement.classList.remove('dark');
+      const existing = document.getElementById('dark-mode-styles');
+      if (existing) existing.remove();
+    }
+  }, [data.settings.darkMode]);
 // --- NOTIFICATION SYSTEM ---
   useEffect(() => {
     // 1. Only run if notifications are enabled and we are NOT in simulation mode
@@ -1615,6 +1640,20 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
             className={`w-12 h-6 rounded-full transition-colors relative ${data.settings.allowNotifications ? 'bg-blue-600' : 'bg-gray-200'}`}
           >
             <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all shadow-sm ${data.settings.allowNotifications ? 'left-7' : 'left-1'}`} />
+          </button>
+      </div><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-700">Dark Mode</h3>
+            <p className="text-xs text-gray-500">Easier on the eyes</p>
+          </div>
+          <button 
+            onClick={() => setData(prev => ({
+                ...prev, 
+                settings: { ...prev.settings, darkMode: !prev.settings.darkMode }
+              }))}
+            className={`w-12 h-6 rounded-full transition-colors relative ${data.settings.darkMode ? 'bg-indigo-600' : 'bg-gray-200'}`}
+          >
+            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all shadow-sm ${data.settings.darkMode ? 'left-7' : 'left-1'}`} />
           </button>
       </div><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Working Hours</h3><div className="grid grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">Start (24h)</label><input type="number" value={data.settings.workStartHour} onChange={e => setData(p => ({...p, settings: {...p.settings, workStartHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div><div><label className="text-xs text-gray-400">End (24h)</label><input type="number" value={data.settings.workEndHour} onChange={e => setData(p => ({...p, settings: {...p.settings, workEndHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div></div></div>{/* Energy Settings */}<div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Peak Energy Hours</h3><div className="grid grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">Peak Start (24h)</label><input type="number" value={data.settings.peakStartHour} onChange={e => setData(p => ({...p, settings: {...p.settings, peakStartHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div><div><label className="text-xs text-gray-400">Peak End (24h)</label><input type="number" value={data.settings.peakEndHour} onChange={e => setData(p => ({...p, settings: {...p.settings, peakEndHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div></div></div>
     {/* Reward Schedule */}
