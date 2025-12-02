@@ -1260,7 +1260,33 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
     }
 
     const [elapsed, setElapsed] = useState(0); const [photo, setPhoto] = useState<File | null>(null); const [verifying, setVerifying] = useState(false); 
-    useEffect(() => { const interval = setInterval(() => { if (data.activeTaskStartTime) setElapsed(Math.floor((Date.now() - data.activeTaskStartTime) / 1000)); }, 1000); return () => clearInterval(interval); }, [data.activeTaskStartTime]); 
+    // Update Timer & Tab Title
+    useEffect(() => { 
+      const interval = setInterval(() => { 
+        if (data.activeTaskStartTime) {
+          const sec = Math.floor((Date.now() - data.activeTaskStartTime) / 1000);
+          setElapsed(sec);
+          
+          // Calculate remaining time for the title
+          const totalSec = (activeTask as any).estimatedDuration * 60;
+          const remaining = totalSec - sec;
+          
+          if (remaining > 0) {
+            const m = Math.floor(remaining / 60);
+            const s = (remaining % 60).toString().padStart(2, '0');
+            document.title = `(${m}:${s}) ${activeTask?.title}`;
+          } else {
+             document.title = "⏰ Time's Up!";
+          }
+        }
+      }, 1000); 
+      
+      // Cleanup: Reset title when component unmounts
+      return () => {
+        clearInterval(interval);
+        document.title = "TimeFlow";
+      };
+    }, [data.activeTaskStartTime, activeTask]);
     if (!activeTask) return <div className="text-center p-4">Error: Task data lost. <button onClick={handlePause} className="text-blue-500 underline">Reset</button></div>; 
     const durationSecs = (activeTask as any).estimatedDuration * 60; const isOvertime = elapsed > durationSecs;
     return (
@@ -1501,7 +1527,7 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
       {showConfetti && <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center overflow-hidden"><div className="absolute animate-bounce text-6xl">🎉</div></div>}
       {jackpotTriggered && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in"><div className="bg-yellow-400 p-8 rounded-3xl shadow-2xl text-center transform animate-bounce"><Trophy className="w-20 h-20 mx-auto text-white mb-4 drop-shadow-md" /><h1 className="text-4xl font-black text-white uppercase tracking-wider drop-shadow-md">Jackpot!</h1><p className="text-yellow-800 font-bold mt-2">+1000 GAIN</p></div></div>}
 
-      <div className="w-full max-w-md bg-white min-h-screen relative shadow-2xl overflow-hidden flex flex-col">
+      <div className="w-full max-w-md bg-white h-[100dvh] relative shadow-2xl overflow-hidden flex flex-col">
         <header className="px-6 py-5 bg-white z-10 sticky top-0 flex justify-between items-center">
           <div><h1 className="text-2xl font-black text-gray-800 tracking-tight">TimeFlow</h1><p className="text-xs text-gray-400 font-medium">{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p></div>
           <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">{(data.goals || []).filter(g => !g.completed).length}</div>
@@ -1514,7 +1540,7 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
           {activeTab === 'settings' && <SettingsView />}
         </main>
 
-        <nav className="absolute bottom-0 left-0 w-full bg-white border-t border-gray-100 px-6 py-4 flex justify-between items-center z-20 pb-safe">
+        <nav className="w-full bg-white border-t border-gray-100 px-6 py-4 flex justify-between items-center z-20 pb-safe shrink-0">
           <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center space-y-1 ${activeTab === 'dashboard' ? 'text-blue-600' : 'text-gray-400'}`}><Clock className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Flow</span></button>
           <button onClick={() => setActiveTab('goals')} className={`flex flex-col items-center space-y-1 ${activeTab === 'goals' ? 'text-blue-600' : 'text-gray-400'}`}><List className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Goals</span></button>
           <button onClick={() => setActiveTab('categories')} className={`flex flex-col items-center space-y-1 ${activeTab === 'categories' ? 'text-blue-600' : 'text-gray-400'}`}><BarChart2 className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Cats</span></button>
