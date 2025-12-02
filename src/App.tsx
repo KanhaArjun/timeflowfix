@@ -56,7 +56,7 @@ interface TaskLog {
   goalId: string;
   subgoalId?: string;
   categoryId: string;
-  action: 'completed' | 'skipped' | 'snoozed' | 'reward_start' | 'incomplete' | 'moved' | 'paused' | 'relapse'; 
+  action: 'completed' | 'skipped' | 'snoozed' | 'reward_start' | 'incomplete' | 'moved' | 'paused' | 'relapse' | 'habit_done';
   timestamp: number;
   hourOfDay: number; 
   duration?: number; 
@@ -67,10 +67,12 @@ interface TaskLog {
   isJackpot?: boolean;
 }
 
-interface BadHabit {
+interface Habit {
   id: string;
   title: string;
-  lastRelapse: number;
+  type: 'good' | 'bad'; 
+  frequency: 'daily' | 'weekly'; 
+  lastEvent: number; 
   createdAt: number;
 }
 
@@ -86,7 +88,7 @@ interface RewardBlock {
 interface UserData {
   categories: Category[];
   goals: Goal[];
-badHabits: BadHabit[];
+habits: Habit[];
   logs: TaskLog[];
   rewardBlocks: RewardBlock[]; 
   debt: number;
@@ -175,7 +177,7 @@ const INITIAL_DATA: UserData = {
     { id: ADAPTIVE_CAT_ID, name: 'Adaptive ⚡', color: '#f59e0b', defaultRepetition: 'daily' },
   ],
   goals: [],
-badHabits: [],
+habits: [],
   logs: [],
   rewardBlocks: [],
   debt: 0,
@@ -250,12 +252,21 @@ const sanitizeUserData = (data: any): UserData => {
     subgoalId: idMap.get(l.subgoalId) || l.subgoalId
   })) : [];
 
-const badHabits = Array.isArray(data?.badHabits) ? data.badHabits.map((h: any) => ({
+const habits = Array.isArray(data?.habits) ? data.habits.map((h: any) => ({
       ...h,
       id: ensureUniqueId(h.id),
-      lastRelapse: h.lastRelapse || Date.now(),
+      type: h.type || 'bad', 
+      frequency: h.frequency || 'daily',
+      lastEvent: h.lastEvent || h.lastRelapse || Date.now(),
       createdAt: h.createdAt || Date.now()
-  })) : [];
+  })) : (Array.isArray(data?.badHabits) ? data.badHabits.map((h: any) => ({ 
+      id: ensureUniqueId(h.id),
+      title: h.title,
+      type: 'bad',
+      frequency: 'daily',
+      lastEvent: h.lastRelapse || Date.now(),
+      createdAt: h.createdAt || Date.now()
+  })) : []);
 
   const rewardBlocks = Array.isArray(data?.rewardBlocks) ? data.rewardBlocks.map((b: any) => ({
       ...b,
@@ -267,7 +278,7 @@ const badHabits = Array.isArray(data?.badHabits) ? data.badHabits.map((h: any) =
   return {
     categories,
     goals,
-badHabits,
+habits,
     logs,
     rewardBlocks,
     debt: typeof data?.debt === 'number' ? data.debt : 0,
@@ -929,7 +940,7 @@ function CategoryBadge({ catId, data }: { catId: string, data: UserData }) {
 
 export default function TimeFlowApp() {
   const [data, setData] = useState<UserData>(INITIAL_DATA);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'goals' | 'categories' | 'stats' | 'settings' | 'bad_habits'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'goals' | 'categories' | 'stats' | 'settings' | 'habits'>('dashboard');
   const [dashboardView, setDashboardView] = useState<'daily' | 'weekly'>('daily');
   const [rewardMode, setRewardMode] = useState<boolean>(false);
   const [showConfetti, setShowConfetti] = useState(false);
@@ -1727,130 +1738,178 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
   };
 
   const CategoriesView = () => { /* ... same ... */ const [name, setName] = useState(''); const [color, setColor] = useState('#3b82f6'); const addCategory = () => { if (!name) return; setData(prev => ({ ...prev, categories: [...prev.categories, { id: generateId(), name, color, defaultRepetition: 'weekdays' }] })); setName(''); }; return (<div className="space-y-6 pb-24"><h2 className="text-2xl font-bold text-gray-800">Your Categories</h2><div className="grid grid-cols-2 md:grid-cols-3 gap-4">{data.categories.map(cat => (<div key={cat.id} className="relative p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-between h-24 overflow-hidden group"><div className="absolute inset-0 opacity-10" style={{ backgroundColor: cat.color }}></div><span className="font-bold text-gray-700 relative z-10">{cat.name}</span><div className="flex justify-between items-end relative z-10"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: cat.color }} /><button onClick={() => setData(prev => ({ ...prev, categories: prev.categories.filter(c => c.id !== cat.id) }))} className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"><Trash2 className="w-4 h-4" /></button></div></div>))}<div className="p-4 rounded-xl border-2 border-dashed border-gray-300 flex flex-col justify-center items-center space-y-2"><input value={name} onChange={e => setName(e.target.value)} className="w-full text-center bg-transparent text-sm focus:outline-none" placeholder="New Category" /><div className="flex items-center space-x-2"><input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-6 h-6 rounded-full overflow-hidden border-none" /><button onClick={addCategory} className="bg-gray-800 text-white rounded-full p-1"><Plus className="w-4 h-4"/></button></div></div></div></div>); };
-const BadHabitsView = () => {
+const HabitsView = () => {
     const [name, setName] = useState('');
+    const [type, setType] = useState<'good' | 'bad'>('good');
 
     const addHabit = () => {
         if (!name.trim()) return;
-        const newHabit: BadHabit = {
+        const newHabit: Habit = {
             id: generateId(),
             title: name,
-            lastRelapse: Date.now(), // Starts at 0 days clean
+            type: type,
+            frequency: 'daily',
+            lastEvent: type === 'good' ? 0 : Date.now(), // Good starts empty, Bad starts "clean" from now
             createdAt: Date.now()
         };
-        setData(prev => ({ ...prev, badHabits: [...prev.badHabits, newHabit] }));
+        setData(prev => ({ ...prev, habits: [...prev.habits, newHabit] }));
         setName('');
     };
 
-    const handleRelapse = (habit: BadHabit) => {
-        if (!confirm("Reset your streak for this habit?")) return;
+    const handleAction = (habit: Habit) => {
+        const isBad = habit.type === 'bad';
+        if (isBad && !confirm("Reset your streak for this habit?")) return;
         
+        // Good habits gain points, Bad habits generate debt
+        const debt = isBad ? 50 : 0;
+        const gain = isBad ? 0 : 10;
+
         const newLog: TaskLog = {
             id: generateId(),
             goalId: habit.id,
-            categoryId: 'bad_habit',
-            action: 'relapse',
+            categoryId: 'habit',
+            action: isBad ? 'relapse' : 'habit_done',
             timestamp: Date.now(),
             hourOfDay: new Date().getHours(),
-            debtGenerated: 50, // Penalty for relapsing
-            gainGenerated: 0
+            debtGenerated: debt,
+            gainGenerated: gain
         };
 
         setData(prev => ({
             ...prev,
-            debt: prev.debt + 50,
+            debt: prev.debt + debt,
+            gain: prev.gain + gain,
             logs: [newLog, ...prev.logs],
-            badHabits: prev.badHabits.map(h => h.id === habit.id ? { ...h, lastRelapse: Date.now() } : h)
+            habits: prev.habits.map(h => h.id === habit.id ? { ...h, lastEvent: Date.now() } : h)
         }));
     };
 
     const deleteHabit = (id: string) => {
         if(confirm("Delete this tracker?")) {
-            setData(prev => ({ ...prev, badHabits: prev.badHabits.filter(h => h.id !== id) }));
+            setData(prev => ({ ...prev, habits: prev.habits.filter(h => h.id !== id) }));
         }
+    };
+
+    // Helper to calc streak for good habits (Consecutive days)
+    const getGoodStreak = (habitId: string) => {
+        const logs = data.logs.filter(l => l.goalId === habitId && l.action === 'habit_done').map(l => new Date(l.timestamp).setHours(0,0,0,0));
+        const uniqueDates = [...new Set(logs)].sort((a,b) => b - a);
+        if (uniqueDates.length === 0) return 0;
+        
+        const today = new Date().setHours(0,0,0,0);
+        const yesterday = today - 86400000;
+        
+        // If not done today or yesterday, streak is broken
+        if (uniqueDates[0] !== today && uniqueDates[0] !== yesterday) return 0;
+
+        let streak = 1;
+        for (let i = 0; i < uniqueDates.length - 1; i++) {
+            if (uniqueDates[i] - uniqueDates[i+1] === 86400000) streak++;
+            else break;
+        }
+        return streak;
     };
 
     return (
         <div className="space-y-6 pb-24 animate-in fade-in">
-            <h2 className="text-2xl font-black text-gray-800">Bad Habits Tracker</h2>
+            <h2 className="text-2xl font-black text-gray-800">Habit Tracker</h2>
+
+            {/* OVERALL HEATMAP */}
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                <h3 className="font-bold text-gray-700 mb-3 flex items-center">
+                    <TrendingUp className="w-4 h-4 mr-2" /> Net Performance (90 Days)
+                </h3>
+                <div className="flex flex-wrap gap-1 justify-center">
+                    {Array.from({ length: 90 }).map((_, i) => {
+                        const d = new Date();
+                        d.setDate(d.getDate() - (89 - i));
+                        const dateStr = d.toISOString().split('T')[0];
+                        
+                        // Calculate Net Score for Day
+                        const dailyLogs = data.logs.filter(l => new Date(l.timestamp).toISOString().split('T')[0] === dateStr);
+                        const goodCount = dailyLogs.filter(l => l.action === 'habit_done').length;
+                        const badCount = dailyLogs.filter(l => l.action === 'relapse').length;
+                        const netScore = goodCount - badCount;
+
+                        let color = "bg-gray-100";
+                        if (netScore > 0) color = netScore > 2 ? "bg-green-500" : "bg-green-300";
+                        if (netScore < 0) color = netScore < -1 ? "bg-red-500" : "bg-red-300";
+                        if (netScore === 0 && (goodCount > 0 || badCount > 0)) color = "bg-gray-400"; // Neutral active day
+
+                        return <div key={i} title={`${dateStr}: +${goodCount} / -${badCount}`} className={`w-3 h-3 rounded-sm ${color}`} />
+                    })}
+                </div>
+                <div className="flex justify-between items-center mt-2 px-2">
+                    <span className="text-[10px] text-gray-400">3 Months ago</span>
+                    <div className="flex space-x-2">
+                        <span className="flex items-center text-[10px] text-gray-400"><div className="w-2 h-2 bg-green-500 mr-1 rounded-sm"/> Good Day</span>
+                        <span className="flex items-center text-[10px] text-gray-400"><div className="w-2 h-2 bg-red-500 mr-1 rounded-sm"/> Bad Day</span>
+                    </div>
+                </div>
+            </div>
             
             {/* Input */}
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex space-x-2">
-                <input 
-                    value={name} 
-                    onChange={e => setName(e.target.value)} 
-                    placeholder="Habit to quit (e.g. Smoking)..." 
-                    className="flex-1 bg-gray-50 p-3 rounded-lg font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-red-200"
-                />
-                <button onClick={addHabit} className="bg-gray-800 text-white px-4 rounded-lg font-bold"><Plus className="w-5 h-5" /></button>
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-3">
+                <div className="flex space-x-2 bg-gray-100 p-1 rounded-lg">
+                    <button onClick={() => setType('good')} className={`flex-1 py-2 rounded-md text-xs font-bold transition-all ${type === 'good' ? 'bg-white shadow text-green-600' : 'text-gray-500'}`}>Good Habit</button>
+                    <button onClick={() => setType('bad')} className={`flex-1 py-2 rounded-md text-xs font-bold transition-all ${type === 'bad' ? 'bg-white shadow text-red-600' : 'text-gray-500'}`}>Bad Habit</button>
+                </div>
+                <div className="flex space-x-2">
+                    <input 
+                        value={name} 
+                        onChange={e => setName(e.target.value)} 
+                        placeholder={type === 'good' ? "e.g. Read 10 pages..." : "e.g. Smoking..."}
+                        className="flex-1 bg-gray-50 p-3 rounded-lg font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                    <button onClick={addHabit} className="bg-gray-900 text-white px-4 rounded-lg font-bold"><Plus className="w-5 h-5" /></button>
+                </div>
             </div>
 
             {/* Habits List */}
             <div className="space-y-4">
-                {data.badHabits.map(habit => {
-                    const daysClean = Math.floor((Date.now() - habit.lastRelapse) / (1000 * 60 * 60 * 24));
-                    const hoursClean = Math.floor((Date.now() - habit.lastRelapse) / (1000 * 60 * 60));
+                {data.habits.map(habit => {
+                    const isBad = habit.type === 'bad';
                     
+                    // Calc Streak
+                    let streakDisplay = '';
+                    if (isBad) {
+                        const daysClean = Math.floor((Date.now() - habit.lastEvent) / (1000 * 60 * 60 * 24));
+                        streakDisplay = `${daysClean} Days Clean`;
+                    } else {
+                        const streak = getGoodStreak(habit.id);
+                        streakDisplay = `${streak} Day Streak`;
+                    }
+
                     return (
                         <div key={habit.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                            <div className="p-5 flex justify-between items-start">
+                            <div className="p-5 flex justify-between items-center">
                                 <div>
-                                    <h3 className="text-xl font-bold text-gray-800">{habit.title}</h3>
-                                    <p className="text-xs font-bold text-gray-400 mt-1 uppercase tracking-wider">Current Streak</p>
-                                    <div className="text-3xl font-black text-gray-800 mt-1">
-                                        {daysClean > 0 ? `${daysClean} Days` : `${hoursClean} Hours`}
+                                    <div className="flex items-center space-x-2">
+                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${isBad ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                                            {isBad ? 'Break' : 'Build'}
+                                        </span>
+                                        <h3 className="text-xl font-bold text-gray-800">{habit.title}</h3>
                                     </div>
+                                    <div className="text-2xl font-black text-gray-800 mt-1">{streakDisplay}</div>
                                 </div>
                                 <div className="flex space-x-2">
                                     <button 
-                                        onClick={() => handleRelapse(habit)} 
-                                        className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold text-sm border border-red-100 hover:bg-red-100 transition-colors"
+                                        onClick={() => handleAction(habit)} 
+                                        className={`px-4 py-3 rounded-xl font-bold text-sm border transition-colors flex flex-col items-center ${isBad ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' : 'bg-green-50 text-green-600 border-green-100 hover:bg-green-100'}`}
                                     >
-                                        I Relapsed
+                                        {isBad ? <AlertTriangle className="w-5 h-5 mb-1"/> : <CheckCircle className="w-5 h-5 mb-1"/>}
+                                        {isBad ? 'Relapsed' : 'I Did It'}
                                     </button>
                                     <button onClick={() => deleteHabit(habit.id)} className="text-gray-300 hover:text-red-400 p-2"><Trash2 className="w-4 h-4" /></button>
-                                </div>
-                            </div>
-
-                            {/* Consistency Heatmap (90 Days) */}
-                            <div className="bg-gray-50 p-4 border-t border-gray-100">
-                                <p className="text-[10px] font-bold text-gray-400 uppercase mb-2">90 Day History</p>
-                                <div className="flex flex-wrap gap-1 content-start">
-                                    {Array.from({ length: 90 }).map((_, i) => {
-                                        const d = new Date();
-                                        d.setDate(d.getDate() - (89 - i));
-                                        const dateStr = d.toISOString().split('T')[0];
-                                        
-                                        // Check if a relapse happened this day
-                                        const relapsed = data.logs.some(l => 
-                                            l.goalId === habit.id && 
-                                            l.action === 'relapse' && 
-                                            new Date(l.timestamp).toISOString().split('T')[0] === dateStr
-                                        );
-
-                                        let color = "bg-gray-200"; // Default / Before creation
-                                        if (d.getTime() >= new Date(habit.createdAt).setHours(0,0,0,0)) {
-                                            color = relapsed ? "bg-red-500" : "bg-green-400";
-                                        }
-
-                                        return <div key={i} title={dateStr} className={`w-2 h-2 rounded-sm ${color}`} />
-                                    })}
-                                </div>
-                                <div className="flex justify-between items-center mt-2">
-                                     <span className="text-[10px] text-gray-400">Oldest</span>
-                                     <div className="flex space-x-3">
-                                        <span className="flex items-center text-[10px] text-gray-500 font-bold"><div className="w-2 h-2 rounded-sm bg-green-400 mr-1"/> Clean</span>
-                                        <span className="flex items-center text-[10px] text-gray-500 font-bold"><div className="w-2 h-2 rounded-sm bg-red-500 mr-1"/> Relapse</span>
-                                     </div>
                                 </div>
                             </div>
                         </div>
                     );
                 })}
-                {data.badHabits.length === 0 && (
+                {data.habits.length === 0 && (
                     <div className="text-center py-10 text-gray-400">
-                        <AlertOctagon className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                        <p>No bad habits tracked yet.</p>
+                        <TrendingUp className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                        <p>No habits tracked yet.</p>
                     </div>
                 )}
             </div>
@@ -1923,7 +1982,7 @@ const BadHabitsView = () => {
         <main className="flex-1 px-6 pt-4 overflow-y-auto scrollbar-hide">
           {activeTab === 'dashboard' && <Dashboard />}
           {activeTab === 'goals' && <GoalManager />}
-{activeTab === 'bad_habits' && <BadHabitsView />}
+{activeTab === 'habits' && <HabitsView />}
           {activeTab === 'categories' && <CategoriesView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>
@@ -1931,10 +1990,10 @@ const BadHabitsView = () => {
         <nav className="w-full bg-white border-t border-gray-100 px-6 py-4 flex justify-between items-center z-20 pb-safe shrink-0">
           <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center space-y-1 ${activeTab === 'dashboard' ? 'text-blue-600' : 'text-gray-400'}`}><Clock className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Flow</span></button>
           <button onClick={() => setActiveTab('goals')} className={`flex flex-col items-center space-y-1 ${activeTab === 'goals' ? 'text-blue-600' : 'text-gray-400'}`}><List className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Goals</span></button>
-<button onClick={() => setActiveTab('bad_habits')} className={`flex flex-col items-center space-y-1 ${activeTab === 'bad_habits' ? 'text-red-500' : 'text-gray-400'}`}>
-        <AlertOctagon className="w-6 h-6" />
-        <span className="text-[10px] font-bold uppercase">Habits</span>
-    </button>
+<button onClick={() => setActiveTab('habits')} className={`flex flex-col items-center space-y-1 ${activeTab === 'habits' ? 'text-purple-600' : 'text-gray-400'}`}>
+    <TrendingUp className="w-6 h-6" />
+    <span className="text-[10px] font-bold uppercase">Habits</span>
+</button>
           <button onClick={() => setActiveTab('categories')} className={`flex flex-col items-center space-y-1 ${activeTab === 'categories' ? 'text-blue-600' : 'text-gray-400'}`}><BarChart2 className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Cats</span></button>
           <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center space-y-1 ${activeTab === 'settings' ? 'text-blue-600' : 'text-gray-400'}`}><Settings className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Setup</span></button>
         </nav>
