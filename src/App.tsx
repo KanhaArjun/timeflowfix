@@ -1235,15 +1235,18 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
   // --- In-Component Views ---
 
   const InProgressView = () => {
+    // 1. Setup Active Task
     let activeTask: ActiveTaskWrapper | null = null; 
-    
-    // FIX: Search for task in GOALS or REWARD BLOCKS to prevent crash
     (data.goals || []).forEach(g => { 
-        if (data.activeTaskType === 'goal' && g.id === data.activeTaskId) { activeTask = { ...g, type: 'goal', parentId: g.id, originalGoal: g, estimatedDuration: g.timing || 60, difficulty: g.difficulty }; } else if (!data.activeTaskType && g.id === data.activeTaskId) { activeTask = { ...g, type: 'goal', parentId: g.id, originalGoal: g, estimatedDuration: g.timing || 60, difficulty: g.difficulty }; }
-        (g.subgoals || []).forEach(sg => { if (data.activeTaskType === 'subgoal' && sg.id === data.activeTaskId) { activeTask = { ...sg, type: 'subgoal', parentId: g.id, originalGoal: g, estimatedDuration: sg.timing || 45, difficulty: sg.difficulty || g.difficulty, title: `${g.title}: ${sg.title}` }; } else if (!data.activeTaskType && sg.id === data.activeTaskId) { activeTask = { ...sg, type: 'subgoal', parentId: g.id, originalGoal: g, estimatedDuration: sg.timing || 45, difficulty: sg.difficulty || g.difficulty, title: `${g.title}: ${sg.title}` }; } }); 
+        if (data.activeTaskType === 'goal' && g.id === data.activeTaskId) { activeTask = { ...g, type: 'goal', parentId: g.id, originalGoal: g, estimatedDuration: g.timing || 60, difficulty: g.difficulty }; } 
+        else if (!data.activeTaskType && g.id === data.activeTaskId) { activeTask = { ...g, type: 'goal', parentId: g.id, originalGoal: g, estimatedDuration: g.timing || 60, difficulty: g.difficulty }; }
+        (g.subgoals || []).forEach(sg => { 
+            if (data.activeTaskType === 'subgoal' && sg.id === data.activeTaskId) { activeTask = { ...sg, type: 'subgoal', parentId: g.id, originalGoal: g, estimatedDuration: sg.timing || 45, difficulty: sg.difficulty || g.difficulty, title: `${g.title}: ${sg.title}` }; } 
+            else if (!data.activeTaskType && sg.id === data.activeTaskId) { activeTask = { ...sg, type: 'subgoal', parentId: g.id, originalGoal: g, estimatedDuration: sg.timing || 45, difficulty: sg.difficulty || g.difficulty, title: `${g.title}: ${sg.title}` }; } 
+        }); 
     });
     
-    // If not in goals, check rewards
+    // Check rewards if not found
     if (!activeTask) {
         const rewardBlock = data.rewardBlocks.find(r => r.id === data.activeTaskId);
         if (rewardBlock) {
@@ -1259,15 +1262,19 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
         }
     }
 
-    const [elapsed, setElapsed] = useState(0); const [photo, setPhoto] = useState<File | null>(null); const [verifying, setVerifying] = useState(false); 
-    // Update Timer & Tab Title
+    // 2. State Hooks
+    const [elapsed, setElapsed] = useState(0); 
+    const [photo, setPhoto] = useState<File | null>(null);
+    const [verifying, setVerifying] = useState(false);
+    const [zenMode, setZenMode] = useState(false); // <--- NEW: Zen State
+
+    // 3. Timer Logic & Tab Title
     useEffect(() => { 
       const interval = setInterval(() => { 
         if (data.activeTaskStartTime) {
           const sec = Math.floor((Date.now() - data.activeTaskStartTime) / 1000);
           setElapsed(sec);
           
-          // Calculate remaining time for the title
           const totalSec = (activeTask as any).estimatedDuration * 60;
           const remaining = totalSec - sec;
           
@@ -1280,21 +1287,112 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
           }
         }
       }, 1000); 
-      
-      // Cleanup: Reset title when component unmounts
-      return () => {
-        clearInterval(interval);
-        document.title = "TimeFlow";
-      };
+      return () => { clearInterval(interval); document.title = "TimeFlow"; };
     }, [data.activeTaskStartTime, activeTask]);
+
     if (!activeTask) return <div className="text-center p-4">Error: Task data lost. <button onClick={handlePause} className="text-blue-500 underline">Reset</button></div>; 
-    const durationSecs = (activeTask as any).estimatedDuration * 60; const isOvertime = elapsed > durationSecs;
+    
+    const durationSecs = (activeTask as any).estimatedDuration * 60; 
+    const isOvertime = elapsed > durationSecs;
+    const isReward = (activeTask as any).type === 'reward_block'; // <--- NEW: Check Type
+
+    // --- ZEN MODE OVERLAY ---
+    if (zenMode) {
+        return (
+            <div className="fixed inset-0 z-50 bg-gray-900 text-white flex flex-col items-center justify-center p-6 animate-in fade-in duration-300">
+                {/* Exit Button */}
+                <button 
+                    onClick={() => setZenMode(false)}
+                    className="absolute top-6 right-6 p-3 bg-gray-800 rounded-full text-gray-400 hover:text-white transition-colors"
+                >
+                    <X className="w-6 h-6" />
+                </button>
+
+                {/* Zen Content */}
+                <div className="space-y-12 text-center max-w-md w-full">
+                    <div>
+                        <div className="text-gray-400 font-medium uppercase tracking-widest text-sm mb-4">Focusing On</div>
+                        <h2 className="text-4xl font-bold leading-tight">{(activeTask as any).title}</h2>
+                    </div>
+
+                    <div className={`font-mono font-black text-8xl tracking-wider ${isOvertime ? 'text-red-500 animate-pulse' : 'text-white'}`}>
+                        {Math.floor(elapsed / 60)}:{(elapsed % 60).toString().padStart(2, '0')}
+                    </div>
+                    
+                    {/* Zen Controls */}
+                    <div className="grid grid-cols-2 gap-4 pt-8">
+                         <button 
+                            onClick={handlePause} 
+                            className="py-4 bg-gray-800 text-gray-300 rounded-2xl font-bold text-lg hover:bg-gray-700 transition-colors"
+                         >
+                            Pause
+                         </button>
+                         <button 
+                            onClick={() => { setZenMode(false); setVerifying(true); }} 
+                            className="py-4 bg-blue-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-blue-900/50 hover:bg-blue-500 transition-colors"
+                         >
+                            Finish
+                         </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // --- STANDARD VIEW ---
     return (
       <div className="bg-white rounded-3xl shadow-xl overflow-hidden border border-blue-100 p-6 flex flex-col items-center text-center space-y-6 animate-in fade-in">
-        <div className="w-full flex justify-between items-center"><span className="text-xs font-bold text-blue-500 uppercase tracking-widest">In Progress</span>{isOvertime && <span className="text-xs font-bold text-red-500 animate-pulse flex items-center"><AlertTriangle className="w-3 h-3 mr-1"/> Overtime</span>}</div>
-        <div className="relative w-48 h-48 flex items-center justify-center"><svg className="w-full h-full transform -rotate-90"><circle cx="96" cy="96" r="88" className="text-gray-100" strokeWidth="12" fill="none" stroke="currentColor" /><circle cx="96" cy="96" r="88" className={isOvertime ? "text-red-500" : "text-blue-500"} strokeWidth="12" fill="none" stroke="currentColor" strokeDasharray={553} strokeDashoffset={553 - (553 * Math.min((elapsed / durationSecs) * 100, 100)) / 100} strokeLinecap="round" /></svg><div className="absolute inset-0 flex flex-col items-center justify-center"><span className="text-4xl font-black text-gray-800">{Math.floor(elapsed / 60)}:{(elapsed % 60).toString().padStart(2, '0')}</span><span className="text-xs text-gray-400">of {(activeTask as any).estimatedDuration}m</span></div></div>
-        <div><h2 className="text-xl font-bold text-gray-800 leading-tight mb-1">{(activeTask as any).title}</h2><CategoryBadge catId={(activeTask as any).originalGoal.categoryId} data={data} /></div>
-        {!verifying ? (<div className="w-full space-y-3"><button onClick={() => setVerifying(true)} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200">Verify & Finish</button><button onClick={handlePause} className="text-gray-400 text-sm hover:text-red-500">Cancel / Pause</button></div>) : (<div className="w-full bg-gray-50 p-4 rounded-xl space-y-3"><p className="text-sm text-gray-600 font-bold">Great work! Upload proof.</p><label className="block w-full p-4 border-2 border-dashed border-blue-300 rounded-lg text-center cursor-pointer hover:bg-blue-50 text-blue-500"><input type="file" capture="environment" className="hidden" onChange={(e) => setPhoto(e.target.files ? e.target.files[0] : null)} /><Camera className="w-8 h-8 mx-auto mb-1" />{photo ? <span className="text-green-600 font-bold">{photo.name}</span> : 'Tap to Take Photo'}</label><div className="flex space-x-2"><button onClick={() => setVerifying(false)} className="flex-1 bg-gray-200 text-gray-600 py-3 rounded-xl font-bold">Back</button><button onClick={() => handleIncompleteTask(activeTask!, elapsed)} className="flex-1 bg-yellow-500 text-white py-3 rounded-xl font-bold">Incomplete (Defer)</button><button disabled={!photo} onClick={() => handleCompleteTask(activeTask!, elapsed)} className="flex-1 bg-green-500 text-white py-3 rounded-xl font-bold disabled:opacity-50">Complete</button></div></div>)}
+        <div className="w-full flex justify-between items-center">
+            <span className="text-xs font-bold text-blue-500 uppercase tracking-widest">In Progress</span>
+            {isOvertime && <span className="text-xs font-bold text-red-500 animate-pulse flex items-center"><AlertTriangle className="w-3 h-3 mr-1"/> Overtime</span>}
+        </div>
+        
+        <div className="relative w-48 h-48 flex items-center justify-center">
+            <svg className="w-full h-full transform -rotate-90">
+                <circle cx="96" cy="96" r="88" className="text-gray-100" strokeWidth="12" fill="none" stroke="currentColor" />
+                <circle cx="96" cy="96" r="88" className={isOvertime ? "text-red-500" : "text-blue-500"} strokeWidth="12" fill="none" stroke="currentColor" strokeDasharray={553} strokeDashoffset={553 - (553 * Math.min((elapsed / durationSecs) * 100, 100)) / 100} strokeLinecap="round" />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-4xl font-black text-gray-800">{Math.floor(elapsed / 60)}:{(elapsed % 60).toString().padStart(2, '0')}</span>
+                <span className="text-xs text-gray-400">of {(activeTask as any).estimatedDuration}m</span>
+            </div>
+        </div>
+
+        <div>
+            <h2 className="text-xl font-bold text-gray-800 leading-tight mb-1">{(activeTask as any).title}</h2>
+            <CategoryBadge catId={(activeTask as any).originalGoal.categoryId} data={data} />
+        </div>
+
+        {!verifying ? (
+            <div className="w-full space-y-3">
+                <div className="flex space-x-2">
+                    <button onClick={() => setVerifying(true)} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200">
+                        Verify & Finish
+                    </button>
+                    {/* ZEN BUTTON: Only show if NOT a reward */}
+                    {!isReward && (
+                        <button onClick={() => setZenMode(true)} className="w-16 bg-gray-900 text-white rounded-xl flex items-center justify-center shadow-lg hover:bg-gray-700" title="Enter Zen Mode">
+                            <Zap className="w-6 h-6" />
+                        </button>
+                    )}
+                </div>
+                <button onClick={handlePause} className="text-gray-400 text-sm hover:text-red-500">Cancel / Pause</button>
+            </div>
+        ) : (
+            <div className="w-full bg-gray-50 p-4 rounded-xl space-y-3">
+                <p className="text-sm text-gray-600 font-bold">Great work! Upload proof.</p>
+                <label className="block w-full p-4 border-2 border-dashed border-blue-300 rounded-lg text-center cursor-pointer hover:bg-blue-50 text-blue-500">
+                    <input type="file" capture="environment" className="hidden" onChange={(e) => setPhoto(e.target.files ? e.target.files[0] : null)} />
+                    <Camera className="w-8 h-8 mx-auto mb-1" />
+                    {photo ? <span className="text-green-600 font-bold">{photo.name}</span> : 'Tap to Take Photo'}
+                </label>
+                <div className="flex space-x-2">
+                    <button onClick={() => setVerifying(false)} className="flex-1 bg-gray-200 text-gray-600 py-3 rounded-xl font-bold">Back</button>
+                    <button onClick={() => handleIncompleteTask(activeTask!, elapsed)} className="flex-1 bg-yellow-500 text-white py-3 rounded-xl font-bold">Incomplete (Defer)</button>
+                    <button disabled={!photo} onClick={() => handleCompleteTask(activeTask!, elapsed)} className="flex-1 bg-green-500 text-white py-3 rounded-xl font-bold disabled:opacity-50">Complete</button>
+                </div>
+            </div>
+        )}
       </div>
     );
   };
