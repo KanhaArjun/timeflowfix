@@ -1531,8 +1531,6 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
              })}
           </div>
         )}
-      </div>
-    );
 {/* --- TASK DETAILS POPUP --- */}
     {viewingTask && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in" onClick={() => setViewingTask(null)}>
@@ -1582,6 +1580,8 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
          </div>
       </div>
     )}
+</div>
+    );
   };
 
   const GoalManager = () => { 
