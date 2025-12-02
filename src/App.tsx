@@ -56,7 +56,7 @@ interface TaskLog {
   goalId: string;
   subgoalId?: string;
   categoryId: string;
-  action: 'completed' | 'skipped' | 'snoozed' | 'reward_start' | 'incomplete' | 'moved' | 'paused';
+  action: 'completed' | 'skipped' | 'snoozed' | 'reward_start' | 'incomplete' | 'moved' | 'paused' | 'relapse'; 
   timestamp: number;
   hourOfDay: number; 
   duration?: number; 
@@ -65,6 +65,13 @@ interface TaskLog {
   debtGenerated: number;
   gainGenerated: number;
   isJackpot?: boolean;
+}
+
+interface BadHabit {
+  id: string;
+  title: string;
+  lastRelapse: number;
+  createdAt: number;
 }
 
 interface RewardBlock {
@@ -79,6 +86,7 @@ interface RewardBlock {
 interface UserData {
   categories: Category[];
   goals: Goal[];
+badHabits: BadHabit[];
   logs: TaskLog[];
   rewardBlocks: RewardBlock[]; 
   debt: number;
@@ -167,6 +175,7 @@ const INITIAL_DATA: UserData = {
     { id: ADAPTIVE_CAT_ID, name: 'Adaptive ⚡', color: '#f59e0b', defaultRepetition: 'daily' },
   ],
   goals: [],
+badHabits: [],
   logs: [],
   rewardBlocks: [],
   debt: 0,
@@ -241,6 +250,13 @@ const sanitizeUserData = (data: any): UserData => {
     subgoalId: idMap.get(l.subgoalId) || l.subgoalId
   })) : [];
 
+const badHabits = Array.isArray(data?.badHabits) ? data.badHabits.map((h: any) => ({
+      ...h,
+      id: ensureUniqueId(h.id),
+      lastRelapse: h.lastRelapse || Date.now(),
+      createdAt: h.createdAt || Date.now()
+  })) : [];
+
   const rewardBlocks = Array.isArray(data?.rewardBlocks) ? data.rewardBlocks.map((b: any) => ({
       ...b,
       id: ensureUniqueId(b.id),
@@ -251,6 +267,7 @@ const sanitizeUserData = (data: any): UserData => {
   return {
     categories,
     goals,
+badHabits,
     logs,
     rewardBlocks,
     debt: typeof data?.debt === 'number' ? data.debt : 0,
@@ -1710,6 +1727,137 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
   };
 
   const CategoriesView = () => { /* ... same ... */ const [name, setName] = useState(''); const [color, setColor] = useState('#3b82f6'); const addCategory = () => { if (!name) return; setData(prev => ({ ...prev, categories: [...prev.categories, { id: generateId(), name, color, defaultRepetition: 'weekdays' }] })); setName(''); }; return (<div className="space-y-6 pb-24"><h2 className="text-2xl font-bold text-gray-800">Your Categories</h2><div className="grid grid-cols-2 md:grid-cols-3 gap-4">{data.categories.map(cat => (<div key={cat.id} className="relative p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-between h-24 overflow-hidden group"><div className="absolute inset-0 opacity-10" style={{ backgroundColor: cat.color }}></div><span className="font-bold text-gray-700 relative z-10">{cat.name}</span><div className="flex justify-between items-end relative z-10"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: cat.color }} /><button onClick={() => setData(prev => ({ ...prev, categories: prev.categories.filter(c => c.id !== cat.id) }))} className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"><Trash2 className="w-4 h-4" /></button></div></div>))}<div className="p-4 rounded-xl border-2 border-dashed border-gray-300 flex flex-col justify-center items-center space-y-2"><input value={name} onChange={e => setName(e.target.value)} className="w-full text-center bg-transparent text-sm focus:outline-none" placeholder="New Category" /><div className="flex items-center space-x-2"><input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-6 h-6 rounded-full overflow-hidden border-none" /><button onClick={addCategory} className="bg-gray-800 text-white rounded-full p-1"><Plus className="w-4 h-4"/></button></div></div></div></div>); };
+const BadHabitsView = () => {
+    const [name, setName] = useState('');
+
+    const addHabit = () => {
+        if (!name.trim()) return;
+        const newHabit: BadHabit = {
+            id: generateId(),
+            title: name,
+            lastRelapse: Date.now(), // Starts at 0 days clean
+            createdAt: Date.now()
+        };
+        setData(prev => ({ ...prev, badHabits: [...prev.badHabits, newHabit] }));
+        setName('');
+    };
+
+    const handleRelapse = (habit: BadHabit) => {
+        if (!confirm("Reset your streak for this habit?")) return;
+        
+        const newLog: TaskLog = {
+            id: generateId(),
+            goalId: habit.id,
+            categoryId: 'bad_habit',
+            action: 'relapse',
+            timestamp: Date.now(),
+            hourOfDay: new Date().getHours(),
+            debtGenerated: 50, // Penalty for relapsing
+            gainGenerated: 0
+        };
+
+        setData(prev => ({
+            ...prev,
+            debt: prev.debt + 50,
+            logs: [newLog, ...prev.logs],
+            badHabits: prev.badHabits.map(h => h.id === habit.id ? { ...h, lastRelapse: Date.now() } : h)
+        }));
+    };
+
+    const deleteHabit = (id: string) => {
+        if(confirm("Delete this tracker?")) {
+            setData(prev => ({ ...prev, badHabits: prev.badHabits.filter(h => h.id !== id) }));
+        }
+    };
+
+    return (
+        <div className="space-y-6 pb-24 animate-in fade-in">
+            <h2 className="text-2xl font-black text-gray-800">Bad Habits Tracker</h2>
+            
+            {/* Input */}
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex space-x-2">
+                <input 
+                    value={name} 
+                    onChange={e => setName(e.target.value)} 
+                    placeholder="Habit to quit (e.g. Smoking)..." 
+                    className="flex-1 bg-gray-50 p-3 rounded-lg font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-red-200"
+                />
+                <button onClick={addHabit} className="bg-gray-800 text-white px-4 rounded-lg font-bold"><Plus className="w-5 h-5" /></button>
+            </div>
+
+            {/* Habits List */}
+            <div className="space-y-4">
+                {data.badHabits.map(habit => {
+                    const daysClean = Math.floor((Date.now() - habit.lastRelapse) / (1000 * 60 * 60 * 24));
+                    const hoursClean = Math.floor((Date.now() - habit.lastRelapse) / (1000 * 60 * 60));
+                    
+                    return (
+                        <div key={habit.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="p-5 flex justify-between items-start">
+                                <div>
+                                    <h3 className="text-xl font-bold text-gray-800">{habit.title}</h3>
+                                    <p className="text-xs font-bold text-gray-400 mt-1 uppercase tracking-wider">Current Streak</p>
+                                    <div className="text-3xl font-black text-gray-800 mt-1">
+                                        {daysClean > 0 ? `${daysClean} Days` : `${hoursClean} Hours`}
+                                    </div>
+                                </div>
+                                <div className="flex space-x-2">
+                                    <button 
+                                        onClick={() => handleRelapse(habit)} 
+                                        className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold text-sm border border-red-100 hover:bg-red-100 transition-colors"
+                                    >
+                                        I Relapsed
+                                    </button>
+                                    <button onClick={() => deleteHabit(habit.id)} className="text-gray-300 hover:text-red-400 p-2"><Trash2 className="w-4 h-4" /></button>
+                                </div>
+                            </div>
+
+                            {/* Consistency Heatmap (90 Days) */}
+                            <div className="bg-gray-50 p-4 border-t border-gray-100">
+                                <p className="text-[10px] font-bold text-gray-400 uppercase mb-2">90 Day History</p>
+                                <div className="flex flex-wrap gap-1 content-start">
+                                    {Array.from({ length: 90 }).map((_, i) => {
+                                        const d = new Date();
+                                        d.setDate(d.getDate() - (89 - i));
+                                        const dateStr = d.toISOString().split('T')[0];
+                                        const createDateStr = new Date(habit.createdAt).toISOString().split('T')[0];
+                                        
+                                        // Check if a relapse happened this day
+                                        const relapsed = data.logs.some(l => 
+                                            l.goalId === habit.id && 
+                                            l.action === 'relapse' && 
+                                            new Date(l.timestamp).toISOString().split('T')[0] === dateStr
+                                        );
+
+                                        let color = "bg-gray-200"; // Default / Before creation
+                                        if (d.getTime() >= new Date(habit.createdAt).setHours(0,0,0,0)) {
+                                            color = relapsed ? "bg-red-500" : "bg-green-400";
+                                        }
+
+                                        return <div key={i} title={dateStr} className={`w-2 h-2 rounded-sm ${color}`} />
+                                    })}
+                                </div>
+                                <div className="flex justify-between items-center mt-2">
+                                     <span className="text-[10px] text-gray-400">Oldest</span>
+                                     <div className="flex space-x-3">
+                                        <span className="flex items-center text-[10px] text-gray-500 font-bold"><div className="w-2 h-2 rounded-sm bg-green-400 mr-1"/> Clean</span>
+                                        <span className="flex items-center text-[10px] text-gray-500 font-bold"><div className="w-2 h-2 rounded-sm bg-red-500 mr-1"/> Relapse</span>
+                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })}
+                {data.badHabits.length === 0 && (
+                    <div className="text-center py-10 text-gray-400">
+                        <AlertOctagon className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                        <p>No bad habits tracked yet.</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+  };
   const SettingsView = () => { const fileInputRef = useRef<HTMLInputElement>(null); const exportData = () => { const blob = new Blob([JSON.stringify(data)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `timeflow_backup_${new Date().toISOString().split('T')[0]}.json`; a.click(); }; const importData = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = (event) => { try { const parsed = JSON.parse(event.target?.result as string); setData(sanitizeUserData(parsed)); alert('Data imported successfully!'); } catch (err) { alert('Failed to parse JSON'); } }; reader.readAsText(file); }; const clearOldHistory = () => { const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000); setData(prev => ({ ...prev, logs: prev.logs.filter(l => l.timestamp > thirtyDaysAgo) })); alert("History older than 30 days has been cleared."); }; 
   // Reward Schedule UI
   const [newRewardDate, setNewRewardDate] = useState(''); const [newRewardStart, setNewRewardStart] = useState(''); const [newRewardEnd, setNewRewardEnd] = useState(''); const [newRewardLabel, setNewRewardLabel] = useState('');
@@ -1776,6 +1924,7 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
         <main className="flex-1 px-6 pt-4 overflow-y-auto scrollbar-hide">
           {activeTab === 'dashboard' && <Dashboard />}
           {activeTab === 'goals' && <GoalManager />}
+{activeTab === 'bad_habits' && <BadHabitsView />}
           {activeTab === 'categories' && <CategoriesView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>
@@ -1783,6 +1932,10 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
         <nav className="w-full bg-white border-t border-gray-100 px-6 py-4 flex justify-between items-center z-20 pb-safe shrink-0">
           <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center space-y-1 ${activeTab === 'dashboard' ? 'text-blue-600' : 'text-gray-400'}`}><Clock className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Flow</span></button>
           <button onClick={() => setActiveTab('goals')} className={`flex flex-col items-center space-y-1 ${activeTab === 'goals' ? 'text-blue-600' : 'text-gray-400'}`}><List className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Goals</span></button>
+<button onClick={() => setActiveTab('bad_habits')} className={`flex flex-col items-center space-y-1 ${activeTab === 'bad_habits' ? 'text-red-500' : 'text-gray-400'}`}>
+        <AlertOctagon className="w-6 h-6" />
+        <span className="text-[10px] font-bold uppercase">Habits</span>
+    </button>
           <button onClick={() => setActiveTab('categories')} className={`flex flex-col items-center space-y-1 ${activeTab === 'categories' ? 'text-blue-600' : 'text-gray-400'}`}><BarChart2 className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Cats</span></button>
           <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center space-y-1 ${activeTab === 'settings' ? 'text-blue-600' : 'text-gray-400'}`}><Settings className="w-6 h-6" /><span className="text-[10px] font-bold uppercase">Setup</span></button>
         </nav>
