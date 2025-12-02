@@ -1006,17 +1006,53 @@ export default function TimeFlowApp() {
   useEffect(() => {
     if (data.settings.darkMode) {
       document.documentElement.classList.add('dark');
-      // Inject global overrides for "Lazy Dark Mode"
       const style = document.createElement('style');
       style.id = 'dark-mode-styles';
       style.innerHTML = `
-        .dark body { background-color: #111827 !important; }
-        .dark .bg-white { background-color: #1f2937 !important; color: #f3f4f6 !important; border-color: #374151 !important; }
-        .dark .bg-gray-50, .dark .bg-gray-100 { background-color: #111827 !important; border-color: #374151 !important; }
-        .dark .text-gray-900, .dark .text-gray-800, .dark .text-gray-700 { color: #f9fafb !important; }
-        .dark .text-gray-600, .dark .text-gray-500, .dark .text-gray-400 { color: #9ca3af !important; }
-        .dark .bg-white input, .dark .bg-white select, .dark textarea { background-color: #374151 !important; color: white !important; border-color: #4b5563 !important; }
+        /* Base Backgrounds */
+        .dark body { background-color: #000000 !important; }
+        .dark .bg-white { background-color: #111827 !important; color: #e5e7eb !important; border-color: #374151 !important; }
+        .dark .bg-gray-50, .dark .bg-gray-100 { background-color: #1f2937 !important; border-color: #374151 !important; }
+        
+        /* Text Adjustments */
+        .dark .text-gray-900 { color: #f9fafb !important; }
+        .dark .text-gray-800, .dark .text-gray-700 { color: #e5e7eb !important; }
+        .dark .text-gray-600, .dark .text-gray-500 { color: #9ca3af !important; }
+        .dark .text-gray-400 { color: #6b7280 !important; }
+        
+        /* Form Elements */
+        .dark input, .dark select, .dark textarea { background-color: #374151 !important; color: white !important; border-color: #4b5563 !important; }
         .dark .shadow-sm, .dark .shadow-xl { box-shadow: none !important; }
+
+        /* --- COLORED CARDS OVERRIDES --- */
+        
+        /* Green (Gain, Hobbies Success) */
+        .dark .bg-green-50 { background-color: #064e3b !important; border-color: #065f46 !important; }
+        .dark .text-green-600, .dark .text-green-700, .dark .text-green-800 { color: #6ee7b7 !important; }
+
+        /* Red (Debt) */
+        .dark .bg-red-50 { background-color: #7f1d1d !important; border-color: #991b1b !important; }
+        .dark .text-red-500, .dark .text-red-600 { color: #fca5a5 !important; }
+
+        /* Purple (Reward Mode, Reward Schedule, Strict Scheduling) */
+        .dark .bg-purple-50 { background-color: #581c87 !important; border-color: #6b21a8 !important; }
+        .dark .text-purple-600, .dark .text-purple-700, .dark .text-purple-800, .dark .text-purple-900 { color: #d8b4fe !important; }
+
+        /* Orange (Developer Mode, Overlap) */
+        .dark .bg-orange-50 { background-color: #451a03 !important; border-color: #78350f !important; }
+        .dark .text-orange-600, .dark .text-orange-800 { color: #fdba74 !important; }
+
+        /* Pink (Hobby Cards) */
+        .dark .bg-pink-50 { background-color: #831843 !important; border-color: #9d174d !important; }
+        .dark .text-pink-600, .dark .text-pink-800 { color: #f9a8d4 !important; }
+
+        /* Blue (Info Cards) */
+        .dark .bg-blue-50 { background-color: #172554 !important; border-color: #1e3a8a !important; }
+        .dark .text-blue-600 { color: #93c5fd !important; }
+        
+        /* Yellow/Amber (Alerts) */
+        .dark .bg-yellow-50, .dark .bg-amber-50 { background-color: #422006 !important; border-color: #713f12 !important; }
+        .dark .text-yellow-800, .dark .text-amber-800 { color: #fde047 !important; }
       `;
       document.head.appendChild(style);
     } else {
