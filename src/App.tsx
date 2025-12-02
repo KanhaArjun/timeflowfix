@@ -1903,6 +1903,40 @@ const HabitsView = () => {
                                     <button onClick={() => deleteHabit(habit.id)} className="text-gray-300 hover:text-red-400 p-2"><Trash2 className="w-4 h-4" /></button>
                                 </div>
                             </div>
+
+                            {/* --- INDIVIDUAL HABIT HEATMAP --- */}
+                            <div className="bg-gray-50 p-4 border-t border-gray-100">
+                                <div className="flex flex-wrap gap-1 content-start">
+                                    {Array.from({ length: 90 }).map((_, i) => {
+                                        const d = new Date();
+                                        d.setDate(d.getDate() - (89 - i));
+                                        const dateStr = d.toISOString().split('T')[0];
+                                        
+                                        // Check logs for this specific habit on this day
+                                        const dayLogs = data.logs.filter(l => 
+                                            l.goalId === habit.id && 
+                                            new Date(l.timestamp).toISOString().split('T')[0] === dateStr
+                                        );
+
+                                        let color = "bg-gray-200";
+                                        
+                                        if (isBad) {
+                                            // Bad Habit: Red if relapse, Green if clean (post-creation)
+                                            const relapsed = dayLogs.some(l => l.action === 'relapse');
+                                            // Only show "Green/Clean" if the day is AFTER the habit was created
+                                            if (d.getTime() >= new Date(habit.createdAt).setHours(0,0,0,0)) {
+                                                color = relapsed ? "bg-red-500" : "bg-green-400";
+                                            }
+                                        } else {
+                                            // Good Habit: Green if done
+                                            const done = dayLogs.some(l => l.action === 'habit_done');
+                                            if (done) color = "bg-green-500";
+                                        }
+
+                                        return <div key={i} title={dateStr} className={`w-2 h-2 rounded-sm ${color}`} />
+                                    })}
+                                </div>
+                            </div>
                         </div>
                     );
                 })}
