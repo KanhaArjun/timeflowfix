@@ -1533,6 +1533,55 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
         )}
       </div>
     );
+{/* --- TASK DETAILS POPUP --- */}
+    {viewingTask && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in" onClick={() => setViewingTask(null)}>
+         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 border border-gray-100" onClick={e => e.stopPropagation()}>
+            {/* Color Header */}
+            <div className="h-3 w-full" style={{ backgroundColor: (data.categories.find(c => c.id === viewingTask.task?.originalGoal?.categoryId)?.color || '#3b82f6') }} />
+            
+            <div className="p-6 space-y-6">
+               <div className="flex justify-between items-start">
+                  <h3 className="text-2xl font-black text-gray-800 leading-tight">{viewingTask.task?.title || 'Break/Gap'}</h3>
+                  <button onClick={() => setViewingTask(null)} className="p-1 bg-gray-100 rounded-full hover:bg-red-100 hover:text-red-500 transition-colors"><X className="w-5 h-5" /></button>
+               </div>
+
+               <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
+                     <p className="text-[10px] font-bold uppercase text-gray-400 mb-1">Time</p>
+                     <p className="font-bold text-gray-800 flex items-center"><Clock className="w-4 h-4 mr-2 text-blue-500"/> {viewingTask.startTime}</p>
+                  </div>
+                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
+                     <p className="text-[10px] font-bold uppercase text-gray-400 mb-1">Duration</p>
+                     <p className="font-bold text-gray-800 flex items-center"><Hourglass className="w-4 h-4 mr-2 text-blue-500"/> {viewingTask.task?.estimatedDuration || 0}m</p>
+                  </div>
+               </div>
+
+               <div className="space-y-3">
+                   <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-gray-100">
+                       <span className="text-sm font-bold text-gray-500">Category</span>
+                       <CategoryBadge catId={viewingTask.task?.originalGoal?.categoryId || ''} data={data} />
+                   </div>
+                   <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-gray-100">
+                       <span className="text-sm font-bold text-gray-500">Difficulty</span>
+                       <span className={`text-sm font-bold px-2 py-0.5 rounded capitalize ${viewingTask.task?.difficulty === 'hard' ? 'bg-red-100 text-red-600' : viewingTask.task?.difficulty === 'easy' ? 'bg-green-100 text-green-600' : 'bg-yellow-100 text-yellow-600'}`}>
+                           {viewingTask.task?.difficulty || 'N/A'}
+                       </span>
+                   </div>
+                   {viewingTask.type === 'passed' && (
+                       <div className="p-3 rounded-xl bg-gray-100 text-center font-bold text-gray-400 text-sm">
+                           Task Completed / Passed
+                       </div>
+                   )}
+               </div>
+
+               <button onClick={() => setViewingTask(null)} className="w-full bg-gray-900 text-white py-4 rounded-xl font-bold shadow-lg hover:bg-gray-800 transition-transform active:scale-95">
+                  Close Details
+               </button>
+            </div>
+         </div>
+      </div>
+    )}
   };
 
   const GoalManager = () => { 
