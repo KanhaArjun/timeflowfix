@@ -1527,8 +1527,8 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
       {showConfetti && <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center overflow-hidden"><div className="absolute animate-bounce text-6xl">🎉</div></div>}
       {jackpotTriggered && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in"><div className="bg-yellow-400 p-8 rounded-3xl shadow-2xl text-center transform animate-bounce"><Trophy className="w-20 h-20 mx-auto text-white mb-4 drop-shadow-md" /><h1 className="text-4xl font-black text-white uppercase tracking-wider drop-shadow-md">Jackpot!</h1><p className="text-yellow-800 font-bold mt-2">+1000 GAIN</p></div></div>}
 
-      <div className="w-full max-w-md bg-white h-[100dvh] relative shadow-2xl overflow-hidden flex flex-col">
-        <header className="px-6 py-5 bg-white z-10 sticky top-0 flex justify-between items-center">
+      <div className="fixed inset-0 w-full max-w-md mx-auto bg-white shadow-2xl overflow-hidden flex flex-col">
+        <header className="px-6 py-5 bg-white z-10 flex justify-between items-center shrink-0">
           <div><h1 className="text-2xl font-black text-gray-800 tracking-tight">TimeFlow</h1><p className="text-xs text-gray-400 font-medium">{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p></div>
           <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">{(data.goals || []).filter(g => !g.completed).length}</div>
         </header>
