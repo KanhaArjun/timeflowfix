@@ -1000,7 +1000,54 @@ export default function TimeFlowApp() {
 
   const dailySchedule = dailyData.schedule;
   const dailyHobbyStatus = dailyData.hobbyStatus;
+// --- NOTIFICATION SYSTEM ---
+  useEffect(() => {
+    // 1. Only run if notifications are enabled and we are NOT in simulation mode
+    if (!data.settings.allowNotifications) return;
+    if (data.settings.simulatedDay !== undefined || data.settings.simulatedHour !== undefined) return;
 
+    // 2. Request browser permission if needed
+    if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    const checkInterval = setInterval(() => {
+      const now = new Date();
+      
+      dailySchedule.forEach(slot => {
+        // Skip breaks, passed tasks, empty slots, or already notified tasks
+        if (slot.type === 'break' || slot.type === 'passed' || !slot.task) return;
+        if (data.notifiedTaskIds.includes(slot.id)) return;
+
+        // Parse slot time (HH:MM)
+        const [h, m] = slot.startTime.split(':').map(Number);
+        const taskTime = new Date();
+        taskTime.setHours(h, m, 0, 0);
+
+        // Calculate difference in minutes
+        const diffMs = taskTime.getTime() - now.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+
+        // Trigger if exactly 30 minutes remain
+        if (diffMins === 30) {
+           if (Notification.permission === 'granted') {
+             new Notification(`Upcoming Task: ${slot.task.title}`, {
+               body: `Starting in 30 minutes (${slot.startTime})`,
+               icon: '/favicon.ico' // Optional: path to your icon
+             });
+           }
+
+           // Update state to prevent duplicate notifications for this ID
+           setData(prev => ({
+             ...prev,
+             notifiedTaskIds: [...prev.notifiedTaskIds, slot.id]
+           }));
+        }
+      });
+    }, 60000); // Run check every 60 seconds
+
+    return () => clearInterval(checkInterval);
+  }, [dailySchedule, data.settings.allowNotifications, data.notifiedTaskIds, data.settings.simulatedDay]);
   const weeklySchedule = useMemo(() => {
     if (dashboardView !== 'weekly') return [];
     const week = [];
@@ -1428,7 +1475,24 @@ let gainAmount = DIFFICULTY_SCORE[difficulty];
   };
   const toggleRewardDay = (dayIdx: number) => { setNewRewardDays(prev => prev.includes(dayIdx) ? prev.filter(d => d !== dayIdx) : [...prev, dayIdx]); };
   
-  return (<div className="space-y-6 pb-24"><h2 className="text-2xl font-bold text-gray-800">Settings</h2><div className="bg-orange-50 p-4 rounded-xl shadow-sm border border-orange-100 space-y-4"><h3 className="font-bold text-orange-800 flex items-center"><FastForward className="w-4 h-4 mr-2" /> Developer / Test Mode</h3><div><label className="text-xs text-orange-600 block mb-1">Simulate Day</label><select value={data.settings.simulatedDay ?? ''} onChange={e => setData(prev => ({...prev, settings: {...prev.settings, simulatedDay: e.target.value ? parseInt(e.target.value) : undefined}}))} className="w-full p-2 bg-white rounded border border-orange-200 text-sm"><option value="">Off (Use Real Date)</option>{DAYS_FULL.map((d, i) => <option key={i} value={i}>Simulate {d}</option>)}</select></div><div><label className="text-xs text-orange-600 block mb-1">Simulate Hour (0-23)</label><input type="number" placeholder="Current Hour Override (e.g. 14 for 2PM)" value={data.settings.simulatedHour ?? ''} onChange={e => setData(prev => ({...prev, settings: {...prev.settings, simulatedHour: e.target.value ? parseInt(e.target.value) : undefined}}))} className="w-full p-2 bg-white rounded border border-orange-200 text-sm" /></div></div><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Working Hours</h3><div className="grid grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">Start (24h)</label><input type="number" value={data.settings.workStartHour} onChange={e => setData(p => ({...p, settings: {...p.settings, workStartHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div><div><label className="text-xs text-gray-400">End (24h)</label><input type="number" value={data.settings.workEndHour} onChange={e => setData(p => ({...p, settings: {...p.settings, workEndHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div></div></div>{/* Energy Settings */}<div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Peak Energy Hours</h3><div className="grid grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">Peak Start (24h)</label><input type="number" value={data.settings.peakStartHour} onChange={e => setData(p => ({...p, settings: {...p.settings, peakStartHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div><div><label className="text-xs text-gray-400">Peak End (24h)</label><input type="number" value={data.settings.peakEndHour} onChange={e => setData(p => ({...p, settings: {...p.settings, peakEndHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div></div></div>
+  return (<div className="space-y-6 pb-24"><h2 className="text-2xl font-bold text-gray-800">Settings</h2><div className="bg-orange-50 p-4 rounded-xl shadow-sm border border-orange-100 space-y-4"><h3 className="font-bold text-orange-800 flex items-center"><FastForward className="w-4 h-4 mr-2" /> Developer / Test Mode</h3><div><label className="text-xs text-orange-600 block mb-1">Simulate Day</label><select value={data.settings.simulatedDay ?? ''} onChange={e => setData(prev => ({...prev, settings: {...prev.settings, simulatedDay: e.target.value ? parseInt(e.target.value) : undefined}}))} className="w-full p-2 bg-white rounded border border-orange-200 text-sm"><option value="">Off (Use Real Date)</option>{DAYS_FULL.map((d, i) => <option key={i} value={i}>Simulate {d}</option>)}</select></div><div><label className="text-xs text-orange-600 block mb-1">Simulate Hour (0-23)</label><input type="number" placeholder="Current Hour Override (e.g. 14 for 2PM)" value={data.settings.simulatedHour ?? ''} onChange={e => setData(prev => ({...prev, settings: {...prev.settings, simulatedHour: e.target.value ? parseInt(e.target.value) : undefined}}))} className="w-full p-2 bg-white rounded border border-orange-200 text-sm" /></div></div><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-700">Notifications</h3>
+            <p className="text-xs text-gray-500">Get alerted 30m before tasks</p>
+          </div>
+          <button 
+            onClick={() => {
+              if (Notification.permission !== 'granted') Notification.requestPermission();
+              setData(prev => ({
+                ...prev, 
+                settings: { ...prev.settings, allowNotifications: !prev.settings.allowNotifications }
+              }));
+            }}
+            className={`w-12 h-6 rounded-full transition-colors relative ${data.settings.allowNotifications ? 'bg-blue-600' : 'bg-gray-200'}`}
+          >
+            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all shadow-sm ${data.settings.allowNotifications ? 'left-7' : 'left-1'}`} />
+          </button>
+      </div><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Working Hours</h3><div className="grid grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">Start (24h)</label><input type="number" value={data.settings.workStartHour} onChange={e => setData(p => ({...p, settings: {...p.settings, workStartHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div><div><label className="text-xs text-gray-400">End (24h)</label><input type="number" value={data.settings.workEndHour} onChange={e => setData(p => ({...p, settings: {...p.settings, workEndHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div></div></div>{/* Energy Settings */}<div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Peak Energy Hours</h3><div className="grid grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">Peak Start (24h)</label><input type="number" value={data.settings.peakStartHour} onChange={e => setData(p => ({...p, settings: {...p.settings, peakStartHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div><div><label className="text-xs text-gray-400">Peak End (24h)</label><input type="number" value={data.settings.peakEndHour} onChange={e => setData(p => ({...p, settings: {...p.settings, peakEndHour: parseInt(e.target.value)}}))} className="w-full p-2 bg-gray-50 rounded" /></div></div></div>
     {/* Reward Schedule */}
     <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 space-y-4"><h3 className="font-bold text-purple-800 flex items-center"><Gift className="w-4 h-4 mr-2" /> Reward Schedule</h3><div className="grid grid-cols-2 gap-2"><input type="date" value={newRewardDate} onChange={e => setNewRewardDate(e.target.value)} className="w-full p-2 bg-white rounded text-sm" /><input type="text" value={newRewardLabel} onChange={e => setNewRewardLabel(e.target.value)} className="w-full p-2 bg-white rounded text-sm" placeholder="Activity" /></div><div className="grid grid-cols-2 gap-2"><input type="time" value={newRewardStart} onChange={e => setNewRewardStart(e.target.value)} className="w-full p-2 bg-white rounded text-sm" /><input type="time" value={newRewardEnd} onChange={e => setNewRewardEnd(e.target.value)} className="w-full p-2 bg-white rounded text-sm" /></div><div className="mt-2"><label className="block text-xs text-purple-700 mb-1 font-bold">Repetition</label><select value={newRewardRepetition} onChange={e => setNewRewardRepetition(e.target.value as Repetition)} className="w-full p-2 bg-white rounded text-sm mb-2"><option value="once">Once</option><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekends">Weekends</option><option value="weekly">Weekly</option><option value="specific_days">Specific Days</option></select>{newRewardRepetition === 'specific_days' && (<div className="flex justify-between px-1 mb-2">{DAYS_SHORT.map((day, idx) => (<button key={idx} onClick={() => toggleRewardDay(idx)} className={`w-8 h-8 rounded-full font-bold text-xs flex items-center justify-center transition-all ${newRewardDays.includes(idx) ? 'bg-purple-600 text-white' : 'bg-white text-purple-300'}`}>{day}</button>))}</div>)}</div><button onClick={addRewardBlock} className="w-full bg-purple-600 text-white py-2 rounded text-sm font-bold">Add Reward Block</button><div className="space-y-2 mt-2">{data.rewardBlocks.map(b => (<div key={b.id} className="flex justify-between items-center bg-white p-2 rounded text-xs"><span>{new Date(b.startTime).toLocaleDateString()} {new Date(b.startTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} - {new Date(b.endTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}: {b.label} ({b.repetition})</span><button onClick={() => setData(prev => ({...prev, rewardBlocks: prev.rewardBlocks.filter(rb => rb.id !== b.id)}))}><X className="w-3 h-3 text-red-400"/></button></div>))}</div></div><div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4"><h3 className="font-bold text-gray-600 border-b pb-2">Data Management</h3><div className="flex space-x-3"><button onClick={exportData} className="flex-1 bg-blue-50 text-blue-600 py-3 rounded-lg flex items-center justify-center font-medium">Download</button><button onClick={() => fileInputRef.current?.click()} className="flex-1 bg-orange-50 text-orange-600 py-3 rounded-lg flex items-center justify-center font-medium">Import</button><input type="file" ref={fileInputRef} onChange={importData} className="hidden" accept=".json" /></div><button onClick={clearOldHistory} className="w-full bg-red-50 text-red-600 py-3 rounded-lg font-bold mt-2">Clear Old History (30+ Days)</button></div></div>); };
 
