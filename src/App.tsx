@@ -1104,52 +1104,53 @@ export default function TimeFlowApp() {
   }, [data.settings.darkMode]);
 // --- NOTIFICATION SYSTEM ---
   useEffect(() => {
-    // 1. Only run if notifications are enabled and we are NOT in simulation mode
+    // 1. Only run if notifications are enabled and not in sim mode
     if (!data.settings.allowNotifications) return;
     if (data.settings.simulatedDay !== undefined || data.settings.simulatedHour !== undefined) return;
 
-    // 2. Request browser permission if needed
-    if (Notification.permission === 'default') {
-      Notification.requestPermission();
+    // 2. Check for Day Reset (Fixes the "Forever Mute" bug)
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (data.lastNotificationDate !== todayStr) {
+        setData(prev => ({ ...prev, notifiedTaskIds: [], lastNotificationDate: todayStr }));
+        return;
     }
 
     const checkInterval = setInterval(() => {
       const now = new Date();
       
       dailySchedule.forEach(slot => {
-        // Skip breaks, passed tasks, empty slots, or already notified tasks
         if (slot.type === 'break' || slot.type === 'passed' || !slot.task) return;
+        
+        // Skip if already notified TODAY
         if (data.notifiedTaskIds.includes(slot.id)) return;
 
-        // Parse slot time (HH:MM)
         const [h, m] = slot.startTime.split(':').map(Number);
         const taskTime = new Date();
         taskTime.setHours(h, m, 0, 0);
 
-        // Calculate difference in minutes
         const diffMs = taskTime.getTime() - now.getTime();
         const diffMins = Math.floor(diffMs / 60000);
 
-        // Trigger if exactly 30 minutes remain
-        if (diffMins === 30) {
+        // FIX: Use a window (28-32 mins) instead of exact check to catch browser timing drifts
+        if (diffMins >= 28 && diffMins <= 32) {
            if (Notification.permission === 'granted') {
-             new Notification(`Upcoming Task: ${slot.task.title}`, {
-               body: `Starting in 30 minutes (${slot.startTime})`,
-               icon: '/favicon.ico' // Optional: path to your icon
+             new Notification(`Upcoming: ${slot.task.title}`, {
+               body: `Starts at ${slot.startTime} (${diffMins} mins)`,
+               icon: '/favicon.ico'
              });
            }
 
-           // Update state to prevent duplicate notifications for this ID
+           // Mark as notified so we don't spam
            setData(prev => ({
              ...prev,
              notifiedTaskIds: [...prev.notifiedTaskIds, slot.id]
            }));
         }
       });
-    }, 60000); // Run check every 60 seconds
+    }, 60000);
 
     return () => clearInterval(checkInterval);
-  }, [dailySchedule, data.settings.allowNotifications, data.notifiedTaskIds, data.settings.simulatedDay]);
+  }, [dailySchedule, data.settings.allowNotifications, data.notifiedTaskIds, data.lastNotificationDate, data.settings.simulatedDay]);
   const weeklySchedule = useMemo(() => {
     if (dashboardView !== 'weekly') return [];
     const week = [];
