@@ -2006,7 +2006,31 @@ const HabitsView = () => {
           <div>
             <h3 className="font-bold text-gray-700">Notifications</h3>
             <p className="text-xs text-gray-500">Get alerted 30m before tasks</p>
-<button onClick={() => { Notification.requestPermission().then(perm => { if (perm === 'granted') new Notification("Test Success!", { body: "Notifications are working." }); else alert("Notifications blocked. Please enable them in your browser settings."); }); }} className="text-xs text-blue-600 font-bold underline mt-1 block">Test Notification</button>
+<button 
+    onClick={() => {
+        if (!("Notification" in window)) {
+            alert("Error: This browser does not support notifications.");
+            return;
+        }
+        alert(`Current Status: ${Notification.permission}\nClick OK to request permission...`);
+        Notification.requestPermission().then(perm => {
+            if (perm === 'granted') {
+                try {
+                    new Notification("Test Success!", { body: "If you see this, it works!", icon: '/favicon.ico' });
+                    // Fallback for some mobile browsers that swallow notifications
+                    navigator.vibrate?.([200, 100, 200]); 
+                } catch (e) {
+                    alert("Permission granted, but sending failed. (Mobile browsers often require a Service Worker for this).");
+                }
+            } else {
+                alert(`Permission was ${perm}. Go to your Browser Settings -> Site Settings -> Notifications and allow this site.`);
+            }
+        });
+    }}
+    className="text-xs text-blue-600 font-bold underline mt-1 block"
+>
+    Test Mobile Notification
+</button>
           </div>
           <button 
             onClick={() => {
