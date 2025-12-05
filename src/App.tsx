@@ -89,10 +89,7 @@ interface UserData {
   categories: Category[];
   goals: Goal[];
 habits: Habit[];
-activeTaskStartTime: number | null;
-  freeTimeUntil: number | null;
   todayScheduleOrder: { date: string, ids: string[] } | null; // <--- ADD THIS LINE
-  notifiedTaskIds: string[];
   logs: TaskLog[];
   rewardBlocks: RewardBlock[]; 
   debt: number;
@@ -463,6 +460,7 @@ const generateScheduleForDate = (
   
   let schedule: ScheduleSlot[] = [];
   const todayDay = targetDate.getDay();
+const completedInThisRun: string[] = []; // <--- ADD THIS
   const todayStr = targetDate.toISOString().split('T')[0];
   const dayStart = new Date(targetDate); dayStart.setHours(0,0,0,0);
   const dayEnd = new Date(targetDate); dayEnd.setHours(23,59,59,999);
@@ -900,6 +898,9 @@ const dailyData = useMemo(() => {
     return generateScheduleForDate(now, data, categoryTendencies, undefined, undefined, frozenOrder);
   }, [data.goals, data.logs, data.settings, categoryTendencies, data.freeTimeUntil, data.categories, data.rewardBlocks, data.todayScheduleOrder]);
 
+
+const dailySchedule = dailyData.schedule;
+
   // SAVE FROZEN ORDER (Effect)
   useEffect(() => {
     if (dailySchedule.length > 0) {
@@ -914,7 +915,6 @@ const dailyData = useMemo(() => {
     }
   }, [dailySchedule, data.todayScheduleOrder]);
 
-  const dailySchedule = dailyData.schedule;
   const dailyHobbyStatus = dailyData.hobbyStatus;
 // --- DARK MODE SYSTEM ---
   useEffect(() => {
