@@ -2006,6 +2006,7 @@ const HabitsView = () => {
           <div>
             <h3 className="font-bold text-gray-700">Notifications</h3>
             <p className="text-xs text-gray-500">Get alerted 30m before tasks</p>
+<button onClick={() => { Notification.requestPermission().then(perm => { if (perm === 'granted') new Notification("Test Success!", { body: "Notifications are working." }); else alert("Notifications blocked. Please enable them in your browser settings."); }); }} className="text-xs text-blue-600 font-bold underline mt-1 block">Test Notification</button>
           </div>
           <button 
             onClick={() => {
