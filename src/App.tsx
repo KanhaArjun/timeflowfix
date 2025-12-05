@@ -1401,7 +1401,30 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
 
     if (justCompleted) return (<div className="flex flex-col items-center justify-center min-h-[50vh] text-center space-y-6 animate-in zoom-in duration-300"><div className={`w-24 h-24 rounded-full flex items-center justify-center mb-4 ${completionType === 'complete' ? 'bg-green-100' : 'bg-yellow-100'}`}>{completionType === 'complete' ? <Check className="w-12 h-12 text-green-600" /> : <Hourglass className="w-12 h-12 text-yellow-600" />}</div><div><h2 className="text-3xl font-black text-gray-800">{completionType === 'complete' ? 'Mission Complete!' : 'Progress Logged'}</h2><p className="text-gray-500 mt-2">Task: <span className="font-bold text-gray-800">{justCompleted.title}</span></p>{justCompleted.isJackpot && <p className="text-purple-600 font-bold animate-pulse mt-1">JACKPOT BONUS!</p>}</div><div className="bg-gray-50 p-4 rounded-xl border border-gray-100 w-full"><p className="text-sm text-gray-500 mb-1">Total Gain</p><p className={`text-2xl font-black ${completionType === 'complete' ? 'text-green-600' : 'text-yellow-600'}`}>+{justCompleted.gain} pts</p></div><button onClick={() => setJustCompleted(null)} className="w-full bg-gray-900 text-white py-4 rounded-xl font-bold shadow-lg">Continue Day</button></div>);
     if (data.activeTaskId) return <div className="space-y-6 pb-24"><InProgressView /></div>;
-    const nextTaskSlot = dailySchedule.find(s => s.type !== 'break' && s.type !== 'passed'); 
+    // --- FLOW LOGIC: FIND CURRENT TASK ---
+    const now = new Date();
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+
+    // 1. Priority: Find the task happening EXACTLY NOW
+    let activeSlot = dailySchedule.find(s => {
+        if (s.type === 'break' || s.type === 'passed') return false;
+        const [sh, sm] = s.startTime.split(':').map(Number);
+        const [eh, em] = s.endTime.split(':').map(Number);
+        const start = sh * 60 + sm;
+        const end = eh * 60 + em;
+        return currentMins >= start && currentMins < end;
+    });
+
+    // 2. Fallback: If nothing is happening now (e.g. before work started), find the NEXT one
+    if (!activeSlot) {
+         activeSlot = dailySchedule.find(s => {
+            if (s.type === 'break' || s.type === 'passed') return false;
+            const [sh, sm] = s.startTime.split(':').map(Number);
+            return (sh * 60 + sm) > currentMins;
+         });
+    }
+
+    const nextTaskSlot = activeSlot;
     const nextTask = nextTaskSlot?.task;
     
     return (
