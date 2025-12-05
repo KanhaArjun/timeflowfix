@@ -89,6 +89,10 @@ interface UserData {
   categories: Category[];
   goals: Goal[];
 habits: Habit[];
+activeTaskStartTime: number | null;
+  freeTimeUntil: number | null;
+  todayScheduleOrder: { date: string, ids: string[] } | null; // <--- ADD THIS LINE
+  notifiedTaskIds: string[];
   logs: TaskLog[];
   rewardBlocks: RewardBlock[]; 
   debt: number;
@@ -186,6 +190,7 @@ habits: [],
   activeTaskType: null,
   activeTaskStartTime: null,
   freeTimeUntil: null,
+todayScheduleOrder: null,
   notifiedTaskIds: [],
   lastNotificationDate: new Date().toISOString().split('T')[0],
   settings: {
@@ -287,6 +292,7 @@ habits,
     activeTaskType: data?.activeTaskType || null,
     activeTaskStartTime: data?.activeTaskStartTime || null,
     freeTimeUntil: data?.freeTimeUntil || null,
+todayScheduleOrder: data?.todayScheduleOrder || null,
     notifiedTaskIds: Array.isArray(data?.notifiedTaskIds) ? data.notifiedTaskIds : [],
     lastNotificationDate: data?.lastNotificationDate || new Date().toISOString().split('T')[0],
     settings: { ...INITIAL_DATA.settings, ...(data?.settings || {}) }
@@ -445,33 +451,30 @@ const selectDailyHobby = (logs: TaskLog[], goals: Goal[], targetDate: Date, simu
   return { hobby: wrapper, status: 'selected' };
 };
 
-// --- CORE SCHEDULER FUNCTION ---
+// --- CORE SCHEDULER (Static Today + Dynamic Week + Habitica Mode) ---
 const generateScheduleForDate = (
   targetDate: Date, 
   data: UserData, 
   tendencies: { time: Record<string, number>, day: Record<string, number[]>, resistance: Record<string, number[]> },
   startTimeOverride?: Date,
-  simulatedCompletedIds: Set<string> = new Set() 
+  simulatedCompletedIds: Set<string> = new Set(),
+  frozenOrder: string[] | null = null // <--- NEW ARGUMENT
 ): { schedule: ScheduleSlot[], completedIds: string[], hobbyStatus: 'none' | 'selected' | 'rest' } => {
   
   let schedule: ScheduleSlot[] = [];
   const todayDay = targetDate.getDay();
   const todayStr = targetDate.toISOString().split('T')[0];
-  const nowTs = new Date().getTime();
-  const completedInThisRun: string[] = [];
-  
   const dayStart = new Date(targetDate); dayStart.setHours(0,0,0,0);
   const dayEnd = new Date(targetDate); dayEnd.setHours(23,59,59,999);
 
+  // 1. Setup Work Hours
   const workStart = new Date(targetDate);
   workStart.setHours(data.settings.workStartHour, 0, 0, 0);
-  
   const workEnd = new Date(targetDate);
-  if (data.settings.workEndHour < data.settings.workStartHour) {
-      workEnd.setDate(workEnd.getDate() + 1);
-  }
+  if (data.settings.workEndHour < data.settings.workStartHour) workEnd.setDate(workEnd.getDate() + 1);
   workEnd.setHours(data.settings.workEndHour, 0, 0, 0);
 
+  // 2. Setup Simulation Time
   let simulationTime = new Date(targetDate);
   let viewStartTime = new Date(targetDate); 
 
@@ -485,9 +488,10 @@ const generateScheduleForDate = (
          simulationTime.setHours(data.settings.simulatedHour, 0, 0, 0);
          viewStartTime.setHours(data.settings.simulatedHour, 0, 0, 0);
        } else {
-         simulationTime = new Date();
-         simulationTime.setMinutes(Math.ceil(simulationTime.getMinutes() / 5) * 5);
-         viewStartTime = new Date(simulationTime);
+         // HABITICA FIX: Always start schedule from Work Start
+         // This ensures tasks don't disappear if you open the app at 5PM
+         simulationTime = new Date(workStart);
+         viewStartTime = new Date(workStart);
        }
        if (data.freeTimeUntil && data.freeTimeUntil > simulationTime.getTime() && data.settings.simulatedHour === undefined) {
          simulationTime = new Date(data.freeTimeUntil);
@@ -498,96 +502,74 @@ const generateScheduleForDate = (
     }
   }
 
+  // Handle late-night start times relative to work hours
   if (simulationTime.getHours() >= 0 && simulationTime.getHours() < data.settings.workStartHour) {
-     if (data.settings.workEndHour < data.settings.workStartHour) {
-     } else {
+     if (data.settings.workEndHour >= data.settings.workStartHour) {
         workEnd.setDate(workEnd.getDate() + 1);
         workEnd.setHours(3, 0, 0, 0); 
      }
   } else if (data.settings.workEndHour < data.settings.workStartHour) {
       workEnd.setDate(workEnd.getDate() + 1);
   }
-
   if (simulationTime < workStart) {
       simulationTime = new Date(workStart);
-      viewStartTime = new Date(workStart); 
+      viewStartTime = new Date(workStart);
   }
 
-  const categoryVelocities: Record<string, number> = {};
-  data.categories.forEach(c => {
-    categoryVelocities[c.id] = calculateVelocity(data.logs, c.id);
+  // 3. Pre-calculate Weekly Balance Stats
+  const weeklyStats: Record<string, number> = {};
+  const oneWeekAgoMs = new Date().getTime() - (7 * 24 * 60 * 60 * 1000);
+  data.logs.forEach(l => {
+      if (l.timestamp > oneWeekAgoMs && (l.action === 'completed' || l.action === 'habit_done')) {
+          weeklyStats[l.categoryId] = (weeklyStats[l.categoryId] || 0) + (l.duration || l.estimatedDuration || 0);
+      }
   });
+  const totalWeeklyMins = Object.values(weeklyStats).reduce((a, b) => a + b, 0) || 1;
+
+  // 4. Build Pools
+  const categoryVelocities: Record<string, number> = {};
+  data.categories.forEach(c => categoryVelocities[c.id] = calculateVelocity(data.logs, c.id));
 
   let flexiblePool: ActiveTaskWrapper[] = [];
-  let fixedPool: ActiveTaskWrapper[] = []; 
-  
-  // 1. Add Reward Blocks
+  let fixedPool: ActiveTaskWrapper[] = [];
+
+  // Add Rewards
   (data.rewardBlocks || []).forEach(block => {
-     // FIX: Check for skipped logs for this block on this date
-     const wasSkipped = data.logs.some(l => 
-        l.goalId === block.id && 
-        l.action === 'skipped' && 
-        new Date(l.timestamp).toDateString() === targetDate.toDateString()
-     );
-
-     if (wasSkipped) return; // Completely hide/exclude if skipped
-
+     const wasSkipped = data.logs.some(l => l.goalId === block.id && l.action === 'skipped' && new Date(l.timestamp).toDateString() === targetDate.toDateString());
+     if (wasSkipped) return;
      if (block.startTime < dayEnd.getTime() && block.endTime > dayStart.getTime()) {
         const effectiveStart = Math.max(block.startTime, dayStart.getTime());
-        
         let shouldSchedule = false;
-        if (block.repetition === 'once' || !block.repetition) {
-            shouldSchedule = true;
-        } else {
+        if (block.repetition === 'once' || !block.repetition) shouldSchedule = true;
+        else {
             const bStart = new Date(block.startTime);
-            let match = false;
-            if (block.repetition === 'daily') match = true;
-            if (block.repetition === 'weekdays' && todayDay >= 1 && todayDay <= 5) match = true;
-            if (block.repetition === 'weekends' && (todayDay === 0 || todayDay === 6)) match = true;
-            if (block.repetition === 'weekly' && bStart.getDay() === todayDay) match = true;
-            if (block.repetition === 'specific_days' && block.repeatSpecificDays?.includes(todayDay)) match = true;
-            if (match) shouldSchedule = true;
+            if (block.repetition === 'daily') shouldSchedule = true;
+            if (block.repetition === 'weekdays' && todayDay >= 1 && todayDay <= 5) shouldSchedule = true;
+            if (block.repetition === 'weekends' && (todayDay === 0 || todayDay === 6)) shouldSchedule = true;
+            if (block.repetition === 'weekly' && bStart.getDay() === todayDay) shouldSchedule = true;
+            if (block.repetition === 'specific_days' && block.repeatSpecificDays?.includes(todayDay)) shouldSchedule = true;
         }
-
         if (shouldSchedule) {
             const s = new Date(effectiveStart);
             if (block.repetition && block.repetition !== 'once') {
                  const origStart = new Date(block.startTime);
                  s.setHours(origStart.getHours(), origStart.getMinutes(), 0, 0);
             }
-
-            const startH = s.getHours();
-            const startM = s.getMinutes();
             const durationMins = (block.endTime - block.startTime) / 60000;
-
-            fixedPool.push({
-              type: 'reward_block',
-              id: block.id,
-              parentId: block.id,
-              title: block.label,
-              fixedTime: `${startH.toString().padStart(2, '0')}:${startM.toString().padStart(2, '0')}`, 
-              estimatedDuration: durationMins,
-              difficulty: 'easy',
-              originalGoal: { categoryId: REWARD_CAT_ID, ...block } as any 
-            });
+            fixedPool.push({ type: 'reward_block', id: block.id, parentId: block.id, title: block.label, fixedTime: `${s.getHours().toString().padStart(2,'0')}:${s.getMinutes().toString().padStart(2,'0')}`, estimatedDuration: durationMins, difficulty: 'easy', originalGoal: { categoryId: REWARD_CAT_ID, ...block } as any });
         }
      }
   });
 
-  const goalsList = Array.isArray(data.goals) ? data.goals : [];
+  // Add Goals
+  (Array.isArray(data.goals) ? data.goals : []).forEach(goal => {
+    if (!goal || goal.completed || simulatedCompletedIds.has(goal.id) || goal.categoryId === HOBBIES_CAT_ID) return;
 
-  goalsList.forEach(goal => {
-    if (!goal || goal.completed) return;
-    if (simulatedCompletedIds.has(goal.id)) return;
-    
-    if (goal.categoryId === HOBBIES_CAT_ID) return;
-
-    let effectiveRepetition = goal.repetitionOverride || 
-                              (data.categories || []).find(c => c.id === goal.categoryId)?.defaultRepetition || 
-                              'once';
-    
+    let effectiveRepetition = goal.repetitionOverride || (data.categories || []).find(c => c.id === goal.categoryId)?.defaultRepetition || 'once';
     let adaptiveBoost = 0;
     let isAdaptive = false;
+    let revisionScore = 0;
+    let isRevision = false;
 
     if (goal.categoryId === ADAPTIVE_CAT_ID) {
         isAdaptive = true;
@@ -595,39 +577,25 @@ const generateScheduleForDate = (
         effectiveRepetition = tuning.repetition;
         adaptiveBoost = 20; 
     }
-
-    let revisionScore = 0;
-    let isRevision = false;
     if (goal.categoryId === REVISION_CAT_ID) {
         isRevision = true;
         revisionScore = calculateRevisionScore(goal, targetDate, goal.lastCompletedAt);
         if (revisionScore <= 1.5) return;
     }
-
-    if (goal.snoozedUntil && goal.snoozedUntil > nowTs) {
-       if (data.settings.simulatedHour === undefined && data.settings.simulatedDay === undefined) return;
-    }
-    
+    if (goal.snoozedUntil && goal.snoozedUntil > new Date().getTime() && data.settings.simulatedHour === undefined) return;
     if (goal.deferredUntil) {
-       const targetEndLimit = new Date(targetDate);
-       targetEndLimit.setHours(23, 59, 59, 999);
+       const targetEndLimit = new Date(targetDate); targetEndLimit.setHours(23, 59, 59, 999);
        if (goal.deferredUntil > targetEndLimit.getTime()) return; 
     }
-
     if (goal.lastCompletedAt && !isRevision) { 
       const last = new Date(goal.lastCompletedAt);
-      const isSameDay = last.toDateString() === targetDate.toDateString();
-      if (isSameDay) { 
-         if (goal.fixedDate) return; 
-         if (effectiveRepetition !== 'once') return; 
+      if (last.toDateString() === targetDate.toDateString()) { 
+         if (!goal.fixedDate && effectiveRepetition !== 'once') return; 
       }
       if (effectiveRepetition === 'weekly') {
-         const diffTime = Math.abs(targetDate.getTime() - last.getTime());
-         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-         if (diffDays < 7) return;
+         if (Math.ceil(Math.abs(targetDate.getTime() - last.getTime()) / (86400000)) < 7) return;
       }
     }
-    
     if (goal.fixedDate && goal.fixedDate !== todayStr) return;
     if (!goal.fixedDate && !isRevision) {
        if (effectiveRepetition === 'weekdays' && (todayDay === 0 || todayDay === 6)) return;
@@ -637,293 +605,190 @@ const generateScheduleForDate = (
 
     const subgoals = Array.isArray(goal.subgoals) ? goal.subgoals : [];
     let firstIncompleteSubgoal: SubGoal | null = null;
-    for (let i = 0; i < subgoals.length; i++) {
-       if (!subgoals[i].completed && !simulatedCompletedIds.has(subgoals[i].id)) {
-          firstIncompleteSubgoal = subgoals[i];
-          break; 
-       }
-    }
-
+    for (const sg of subgoals) { if (!sg.completed && !simulatedCompletedIds.has(sg.id)) { firstIncompleteSubgoal = sg; break; } }
     if (subgoals.length > 0 && !firstIncompleteSubgoal) return;
 
     const items = firstIncompleteSubgoal ? [firstIncompleteSubgoal] : (subgoals.length === 0 ? [goal] : []);
-    
     items.forEach((item) => {
       const deadline = new Date(goal.deadline);
-      const leadDays = PRIORITY_LEAD_DAYS[goal.priority || 'medium'];
       const effectiveDeadline = new Date(deadline);
-      effectiveDeadline.setDate(effectiveDeadline.getDate() - leadDays);
+      effectiveDeadline.setDate(effectiveDeadline.getDate() - PRIORITY_LEAD_DAYS[goal.priority || 'medium']);
       
       if (!goal.fixedTime && !goal.fixedDate) {
-          const distToEffective = (effectiveDeadline.getTime() - targetDate.getTime()) / (1000*60*60*24);
-          if (goal.priority !== 'critical' && distToEffective > 14 && !isRevision && !isAdaptive) return;
+          if (goal.priority !== 'critical' && ((effectiveDeadline.getTime() - targetDate.getTime()) / 86400000) > 14 && !isRevision && !isAdaptive) return;
       }
       
       let urgencyScore = PRIORITY_WEIGHT[goal.priority || 'medium'] * 20;
-      
-      const isZombie = (new Date().getTime() - goal.createdAt) > (24 * 60 * 60 * 1000) && !goal.wasStarted;
-      const isResurrected = goal.wasStarted; 
-      if (isZombie || isResurrected) urgencyScore += RESURRECTION_BOOST;
-
+      if (((new Date().getTime() - goal.createdAt) > 86400000 && !goal.wasStarted) || goal.wasStarted) urgencyScore += RESURRECTION_BOOST;
       urgencyScore += getStressScore(effectiveDeadline, targetDate);
       urgencyScore += adaptiveBoost; 
+      if (isRevision) urgencyScore = 40 + Math.min(revisionScore * 20, 100);
 
-      if (isRevision) {
-          urgencyScore = 40 + Math.min(revisionScore * 20, 100); 
-      }
-
-      const defaultTime = 45;
-      const timing = goal.timing || 60;
-      let baseDuration = defaultTime;
-      if ('timing' in item && typeof item.timing === 'number') baseDuration = item.timing;
-      else { baseDuration = timing; if (subgoals.length > 0) baseDuration = Math.ceil(timing / subgoals.length); }
-
-      const velocity = categoryVelocities[goal.categoryId] || 1;
-      const adaptiveDuration = Math.ceil(baseDuration * velocity);
+      let baseDuration = (('timing' in item && typeof item.timing === 'number') ? item.timing : (goal.timing || 60));
+      if (!('timing' in item) && subgoals.length > 0) baseDuration = Math.ceil((goal.timing || 60) / subgoals.length);
+      
+      const adaptiveDuration = Math.ceil(baseDuration * (categoryVelocities[goal.categoryId] || 1));
       const diff = ('difficulty' in item && item.difficulty) ? item.difficulty : goal.difficulty;
-
+      
       const taskObj: ActiveTaskWrapper = {
-        type: firstIncompleteSubgoal ? 'subgoal' : 'goal',
-        id: item.id, 
-        parentId: goal.id,
-        originalGoal: goal,
+        type: firstIncompleteSubgoal ? 'subgoal' : 'goal', id: item.id, parentId: goal.id, originalGoal: goal,
         title: firstIncompleteSubgoal ? `${goal.title}: ${(item as SubGoal).title}` : goal.title,
-        score: urgencyScore,
-        daysUntilDeadline: (deadline.getTime() - targetDate.getTime()) / (1000 * 60 * 60 * 24),
-        estimatedDuration: adaptiveDuration, 
-        difficulty: diff || 'medium',
-        fixedTime: goal.fixedTime,
-        currentContextScore: 0,
-        isResurrected,
-        isRevision,
-        isAdaptive
+        score: urgencyScore, daysUntilDeadline: (deadline.getTime() - targetDate.getTime()) / 86400000,
+        estimatedDuration: adaptiveDuration, difficulty: diff || 'medium', fixedTime: goal.fixedTime,
+        currentContextScore: 0, isResurrected: goal.wasStarted, isRevision, isAdaptive
       };
-
-      if (goal.fixedTime) {
-        fixedPool.push(taskObj);
-      } else {
-        flexiblePool.push(taskObj);
-      }
+      if (goal.fixedTime) fixedPool.push(taskObj); else flexiblePool.push(taskObj);
     });
   });
 
-  // 2. INJECT HOBBY
-  const hobbyResult = selectDailyHobby(data.logs, goalsList, targetDate, simulatedCompletedIds);
-  if (hobbyResult.status === 'selected' && hobbyResult.hobby) { 
-      flexiblePool.push(hobbyResult.hobby);
-  }
+  // Inject Hobby
+  const hobbyResult = selectDailyHobby(data.logs, Array.isArray(data.goals) ? data.goals : [], targetDate, simulatedCompletedIds);
+  if (hobbyResult.status === 'selected' && hobbyResult.hobby) flexiblePool.push(hobbyResult.hobby);
   const hobbyStatus = hobbyResult.status;
 
   fixedPool.sort((a, b) => {
-      if (!a.fixedTime) return 1;
-      if (!b.fixedTime) return -1;
-      const timeA = parseTimeStr(a.fixedTime!);
-      const timeB = parseTimeStr(b.fixedTime!);
-      return timeA.localeCompare(timeB);
+      if (!a.fixedTime) return 1; if (!b.fixedTime) return -1;
+      return parseTimeStr(a.fixedTime!).localeCompare(parseTimeStr(b.fixedTime!));
   });
-  
-  let fixedLoad = 0;
-  fixedPool.forEach(t => fixedLoad += t.estimatedDuration);
-  const workDayDurationMins = (workEnd.getTime() - workStart.getTime()) / 60000;
-  const maxFlexibleLoad = Math.max(0, workDayDurationMins - fixedLoad);
+
+  let fixedLoad = 0; fixedPool.forEach(t => fixedLoad += t.estimatedDuration);
+  const maxFlexibleLoad = Math.max(0, ((workEnd.getTime() - workStart.getTime()) / 60000) - fixedLoad);
   let currentFlexibleLoad = 0;
-  const balancedFlexiblePool = flexiblePool.filter(task => {
+  flexiblePool = flexiblePool.filter(task => {
     if ((task.daysUntilDeadline || 0) < 3 || task.originalGoal?.priority === 'critical' || task.isHobby || task.isRevision || task.isAdaptive) return true;
-    if (currentFlexibleLoad + task.estimatedDuration <= maxFlexibleLoad) {
-      currentFlexibleLoad += task.estimatedDuration;
-      return true;
-    }
+    if (currentFlexibleLoad + task.estimatedDuration <= maxFlexibleLoad) { currentFlexibleLoad += task.estimatedDuration; return true; }
     return false;
   });
-  flexiblePool = balancedFlexiblePool;
 
-  let fatigueLevel = 0;
-  let workMinutesSinceBreak = 0;
-  let consecutiveHardTasks = 0;
+  // --- AUTOMATED BALANCING + SCORING ---
+  let accumulatedStrain = 0; 
+  let lastCategoryId = '';
+  let consecutiveCategoryCount = 0;
 
   const fillGap = (endTimeLimit: Date) => {
     while (simulationTime < endTimeLimit) {
-      const msRemaining = endTimeLimit.getTime() - simulationTime.getTime();
-      const minsRemaining = Math.floor(msRemaining / 60000);
+      const minsRemaining = Math.floor((endTimeLimit.getTime() - simulationTime.getTime()) / 60000);
+      const minThreshold = flexiblePool.some(t => t.estimatedDuration <= 10) ? 5 : 10;
+      if (minsRemaining < minThreshold && flexiblePool.every(t => t.estimatedDuration > minsRemaining)) break;
 
-      const hasMicroTask = flexiblePool.some(t => t.estimatedDuration <= 10);
-      const minThreshold = hasMicroTask ? 5 : 10;
-
-      if (minsRemaining < minThreshold && flexiblePool.every(t => t.estimatedDuration > minsRemaining)) break; 
-
-      if (workMinutesSinceBreak >= 90) {
-         const breakEnd = new Date(simulationTime.getTime() + 5 * 60000);
-         if (breakEnd > endTimeLimit) break;
-         schedule.push({ 
-             id: `micro-break-${simulationTime.getTime()}`, 
-             startTime: formatTime(simulationTime), 
-             endTime: formatTime(breakEnd), 
-             type: 'break', 
-             reason: "Quick stretch!" 
-         });
-         simulationTime = breakEnd;
-         workMinutesSinceBreak = 0;
-         continue;
-      }
-
-      if (consecutiveHardTasks >= 3) {
+      // STRAIN CHECK
+      if (accumulatedStrain > 45) { 
          const breakEnd = new Date(simulationTime.getTime() + 15 * 60000);
          if (breakEnd > endTimeLimit) break;
-         schedule.push({ 
-             id: `deep-break-${simulationTime.getTime()}`, 
-             startTime: formatTime(simulationTime), 
-             endTime: formatTime(breakEnd), 
-             type: 'break', 
-             reason: "Decompression Break" 
-         });
-         simulationTime = breakEnd;
-         consecutiveHardTasks = 0;
-         workMinutesSinceBreak = 0; 
-         continue;
-      }
-
-      if (fatigueLevel >= 120) { 
-         const breakEnd = new Date(simulationTime.getTime() + 15 * 60000);
-         if (breakEnd > endTimeLimit) break;
-         schedule.push({ id: `break-${simulationTime.getTime()}`, startTime: formatTime(simulationTime), endTime: formatTime(breakEnd), type: 'break', reason: 'Fatigue Reset' });
-         simulationTime = breakEnd; fatigueLevel = 0; continue;
+         schedule.push({ id: `strain-break-${simulationTime.getTime()}`, startTime: formatTime(simulationTime), endTime: formatTime(breakEnd), type: 'break', reason: "Brain Reset" });
+         simulationTime = breakEnd; accumulatedStrain = 0; consecutiveCategoryCount = 0; continue;
       }
 
       const currentHour = simulationTime.getHours();
       const logicalHour = currentHour < data.settings.workStartHour ? currentHour + 24 : currentHour;
-
+      
+      // SCORING
       flexiblePool.forEach(task => {
         let contextScore = task.score || 0;
         const catId = task.originalGoal?.categoryId || '';
         
+        // 1. Weekly Balance
+        const weeklyShare = (weeklyStats[catId] || 0) / totalWeeklyMins;
+        if (weeklyShare > 0.4) contextScore -= 20; 
+        if (weeklyShare < 0.1) contextScore += 20; 
+
+        // 2. Daily Rhythm
+        if (catId === lastCategoryId) {
+            if (consecutiveCategoryCount < 2) contextScore += 10; 
+            else contextScore -= 50; 
+        } else contextScore += 5; 
+
+        // 3. Strain
+        if (accumulatedStrain > 25) {
+            if (task.difficulty === 'hard') contextScore -= 100; 
+            if (task.difficulty === 'easy') contextScore += 50;
+            if (task.isHobby) contextScore += 80;
+        }
+
+        // 4. Standard
         if (task.isHobby) {
-             contextScore = 75; 
+             contextScore += 75; 
              const resistanceArr = tendencies.resistance[catId];
              if (resistanceArr && logicalHour < resistanceArr.length && resistanceArr[logicalHour] > 0) contextScore -= 20;
-        } else if (task.isRevision) {
-             const resistanceArr = tendencies.resistance[catId];
-             if (resistanceArr && logicalHour < resistanceArr.length && resistanceArr[logicalHour] > 0) contextScore -= 40; 
         } else {
-            let preferredHour = tendencies.time[catId];
-            if (preferredHour !== undefined && preferredHour < data.settings.workStartHour) preferredHour += 24;
-            if (preferredHour !== undefined && Math.abs(logicalHour - preferredHour) <= 2) contextScore += 15;
-            const dayCompletions = tendencies.day[catId] ? tendencies.day[catId][todayDay] : 0;
-            const totalCompletions = tendencies.day[catId] ? tendencies.day[catId].reduce((a, b) => a + b, 0) : 0;
-            if (totalCompletions > 0) {
-               const affinity = dayCompletions / totalCompletions;
-               if (affinity > 0.2) contextScore += (affinity * 25); 
-            }
-            const resistanceArr = tendencies.resistance[catId];
-            if (resistanceArr && logicalHour < resistanceArr.length && resistanceArr[logicalHour] > 0) contextScore -= (resistanceArr[logicalHour] * 10);
-            if (logicalHour >= data.settings.peakStartHour && logicalHour < data.settings.peakEndHour) {
-                if (task.difficulty === 'hard') contextScore += 20; else if (task.difficulty === 'easy') contextScore -= 10;
-            } else {
-                if (task.difficulty === 'hard') contextScore -= 15; else if (task.difficulty === 'easy') contextScore += 15;
-            }
-            if (task.isResurrected) contextScore += 20;
+             if (logicalHour >= data.settings.peakStartHour && logicalHour < data.settings.peakEndHour) {
+                if (task.difficulty === 'hard') contextScore += 25;
+                else if (task.difficulty === 'easy') contextScore -= 10;
+             } else {
+                if (task.difficulty === 'hard') contextScore -= 20;
+             }
+             let preferredHour = tendencies.time[catId];
+             if (preferredHour !== undefined && preferredHour < data.settings.workStartHour) preferredHour += 24;
+             if (preferredHour !== undefined && Math.abs(logicalHour - preferredHour) <= 2) contextScore += 15;
         }
         task.currentContextScore = contextScore;
       });
       
-      flexiblePool.sort((a, b) => (b.currentContextScore || 0) - (a.currentContextScore || 0));
-
-      let selectedTaskIndex = -1;
-      for (let i = 0; i < flexiblePool.length; i++) {
-         const t = flexiblePool[i];
-         if (t.estimatedDuration <= minsRemaining) {
-             selectedTaskIndex = i;
-             break;
-         }
+      // --- FROZEN vs DYNAMIC SORT ---
+      if (frozenOrder && frozenOrder.length > 0) {
+          const frozenTasks: ActiveTaskWrapper[] = [];
+          const newTasks: ActiveTaskWrapper[] = [];
+          const poolMap = new Map(flexiblePool.map(t => [t.id, t]));
+          
+          frozenOrder.forEach(id => {
+              if (poolMap.has(id)) { frozenTasks.push(poolMap.get(id)!); poolMap.delete(id); }
+          });
+          poolMap.forEach(task => {
+              // High Priority cuts line
+              if (task.originalGoal?.priority === 'critical' || task.originalGoal?.priority === 'high') newTasks.push(task);
+              else frozenTasks.push(task); 
+          });
+          newTasks.sort((a, b) => (b.score || 0) - (a.score || 0));
+          flexiblePool = [...newTasks, ...frozenTasks];
+      } else {
+          flexiblePool.sort((a, b) => (b.currentContextScore || 0) - (a.currentContextScore || 0));
       }
 
-      if (selectedTaskIndex === -1) break; 
-
+      let selectedTaskIndex = flexiblePool.findIndex(t => t.estimatedDuration <= minsRemaining);
+      if (selectedTaskIndex === -1) break;
       const bestTask = flexiblePool[selectedTaskIndex];
       const taskEnd = new Date(simulationTime.getTime() + bestTask.estimatedDuration * 60000);
-
       schedule.push({ id: bestTask.id!, startTime: formatTime(simulationTime), endTime: formatTime(taskEnd), type: 'task', task: bestTask });
       completedInThisRun.push(bestTask.id!);
 
       flexiblePool.splice(selectedTaskIndex, 1); 
       simulationTime = taskEnd;
       
-      workMinutesSinceBreak += bestTask.estimatedDuration;
-      if (bestTask.difficulty === 'hard') consecutiveHardTasks++; else consecutiveHardTasks = 0; 
-      if (!bestTask.isHobby) fatigueLevel += (bestTask.estimatedDuration * (bestTask.difficulty === 'hard' ? 1.5 : 1));
+      if (bestTask.originalGoal?.categoryId === lastCategoryId) consecutiveCategoryCount++;
+      else { lastCategoryId = bestTask.originalGoal?.categoryId || ''; consecutiveCategoryCount = 1; }
+      
+      const strainMap = { hard: 20, medium: 10, easy: 5 };
+      accumulatedStrain += strainMap[bestTask.difficulty as 'hard'|'medium'|'easy'] || 10;
     }
   };
 
   for (const fixedTask of fixedPool) {
-    const isReward = fixedTask.type === 'reward_block';
     if (!fixedTask.fixedTime) continue;
     const cleanFixedTime = parseTimeStr(fixedTask.fixedTime);
     if (!cleanFixedTime.includes(':')) continue;
-
     const [h, m] = cleanFixedTime.split(':').map(Number);
-    const fixedStart = new Date(targetDate); 
-    fixedStart.setHours(h, m, 0, 0);
+    const fixedStart = new Date(targetDate); fixedStart.setHours(h, m, 0, 0);
     const fixedEnd = new Date(fixedStart.getTime() + fixedTask.estimatedDuration * 60000);
-
-    // FIX: Check if ONGOING
-    // Is currently running: Start < SimTime < End
-    const isOngoing = fixedStart.getTime() < simulationTime.getTime() && fixedEnd.getTime() > simulationTime.getTime();
-
-    if (fixedStart < simulationTime && !isOngoing) {
-        if (fixedStart < viewStartTime) {
-             schedule.push({ 
-              id: fixedTask.id!, 
-              startTime: formatTime(fixedStart), 
-              endTime: formatTime(fixedEnd), 
-              type: isReward ? 'reward_block' : 'passed', 
-              task: fixedTask, 
-              isFixed: true 
-            });
-        } else {
-            schedule.push({ 
-              id: fixedTask.id!, 
-              startTime: formatTime(fixedStart), 
-              endTime: formatTime(fixedEnd), 
-              type: isReward ? 'reward_block' : 'overlap', 
-              task: fixedTask, 
-              isFixed: true 
-            });
-            if (fixedEnd > simulationTime) simulationTime = fixedEnd;
-        }
-        continue; 
-    }
-
-    if (isOngoing) {
-         // Treat as ACTIVE, not passed
-         schedule.push({ 
-            id: fixedTask.id!, 
-            startTime: formatTime(fixedStart), 
-            endTime: formatTime(fixedEnd), 
-            type: isReward ? 'reward_block' : 'ongoing', // Mark as ongoing visually
-            task: fixedTask, 
-            isFixed: true 
-         });
-         simulationTime = fixedEnd; // Push sim time to end of this ongoing task
-         
-         if (isReward) { fatigueLevel = 0; workMinutesSinceBreak = 0; consecutiveHardTasks = 0; } 
-         else { fatigueLevel += (fixedTask.estimatedDuration * (fixedTask.difficulty === 'hard' ? 1.5 : 1)); workMinutesSinceBreak += fixedTask.estimatedDuration; }
-         continue;
-    }
-
-    // Future fixed task
-    if (fixedStart > simulationTime) {
-      fillGap(fixedStart); 
-      if (simulationTime < fixedStart) simulationTime = fixedStart;
-    }
-
-    schedule.push({ id: fixedTask.id!, startTime: formatTime(simulationTime), endTime: formatTime(fixedEnd), type: isReward ? 'reward_block' : 'fixed', task: fixedTask, isFixed: true });
-    simulationTime = fixedEnd;
     
-    if (isReward) { fatigueLevel = 0; workMinutesSinceBreak = 0; consecutiveHardTasks = 0; } 
-    else { fatigueLevel += (fixedTask.estimatedDuration * (fixedTask.difficulty === 'hard' ? 1.5 : 1)); workMinutesSinceBreak += fixedTask.estimatedDuration; }
+    const isOngoing = fixedStart.getTime() < simulationTime.getTime() && fixedEnd.getTime() > simulationTime.getTime();
+    if (fixedStart < simulationTime && !isOngoing) {
+        if (fixedStart < viewStartTime) schedule.push({ id: fixedTask.id!, startTime: formatTime(fixedStart), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'passed', task: fixedTask, isFixed: true });
+        else {
+             schedule.push({ id: fixedTask.id!, startTime: formatTime(fixedStart), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'overlap', task: fixedTask, isFixed: true });
+             if (fixedEnd > simulationTime) { simulationTime = fixedEnd; accumulatedStrain = 0; }
+        }
+        continue;
+    }
+    if (isOngoing) {
+         schedule.push({ id: fixedTask.id!, startTime: formatTime(fixedStart), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'ongoing', task: fixedTask, isFixed: true });
+         simulationTime = fixedEnd; accumulatedStrain = 0; continue;
+    }
+    if (fixedStart > simulationTime) { fillGap(fixedStart); if (simulationTime < fixedStart) simulationTime = fixedStart; }
+
+    schedule.push({ id: fixedTask.id!, startTime: formatTime(simulationTime), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'fixed', task: fixedTask, isFixed: true });
+    simulationTime = fixedEnd; accumulatedStrain = 0;
   }
-
   fillGap(workEnd); 
-
   return { schedule, completedIds: completedInThisRun, hobbyStatus: hobbyStatus as 'none' | 'selected' | 'rest' };
 };
 
@@ -1015,7 +880,7 @@ export default function TimeFlowApp() {
     return { time: tendencies, day: dayTendencies, resistance };
   }, [data.logs, data.settings.workStartHour]);
 
-  const dailyData = useMemo(() => {
+const dailyData = useMemo(() => {
     const now = new Date();
     if (now.getHours() < data.settings.workStartHour) {
       now.setDate(now.getDate() - 1);
@@ -1025,8 +890,29 @@ export default function TimeFlowApp() {
       const diff = data.settings.simulatedDay - currentDay;
       now.setDate(now.getDate() + diff);
     }
-    return generateScheduleForDate(now, data, categoryTendencies);
-  }, [data.goals, data.logs, data.settings, categoryTendencies, data.freeTimeUntil, data.categories, data.rewardBlocks]);
+    
+    // LOAD FROZEN ORDER
+    const todayStr = now.toISOString().split('T')[0];
+    const frozenOrder = (data.todayScheduleOrder && data.todayScheduleOrder.date === todayStr) 
+        ? data.todayScheduleOrder.ids 
+        : null;
+
+    return generateScheduleForDate(now, data, categoryTendencies, undefined, undefined, frozenOrder);
+  }, [data.goals, data.logs, data.settings, categoryTendencies, data.freeTimeUntil, data.categories, data.rewardBlocks, data.todayScheduleOrder]);
+
+  // SAVE FROZEN ORDER (Effect)
+  useEffect(() => {
+    if (dailySchedule.length > 0) {
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        if (!data.todayScheduleOrder || data.todayScheduleOrder.date !== todayStr) {
+            const ids = dailySchedule.map(s => s.task?.id).filter(Boolean) as string[];
+            if (ids.length > 0) {
+                setData(prev => ({ ...prev, todayScheduleOrder: { date: todayStr, ids } }));
+            }
+        }
+    }
+  }, [dailySchedule, data.todayScheduleOrder]);
 
   const dailySchedule = dailyData.schedule;
   const dailyHobbyStatus = dailyData.hobbyStatus;
@@ -1602,8 +1488,32 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
                    )}
                </div>
 
-               <button onClick={() => setViewingTask(null)} className="w-full bg-gray-900 text-white py-4 rounded-xl font-bold shadow-lg hover:bg-gray-800 transition-transform active:scale-95">
-                  Close Details
+               {/* ACTION BUTTONS (The New Part) */}
+               {viewingTask?.task && (
+                   <div className="grid grid-cols-2 gap-3 pt-2">
+                      <button 
+                        onClick={() => { 
+                            handleIncompleteTask(viewingTask.task!); 
+                            setViewingTask(null); 
+                        }} 
+                        className="w-full bg-yellow-100 text-yellow-700 py-3 rounded-xl font-bold shadow-sm hover:bg-yellow-200 transition-colors"
+                      >
+                        Skip / Defer
+                      </button>
+                      <button 
+                        onClick={() => { 
+                            handleCompleteTask(viewingTask.task!); 
+                            setViewingTask(null); 
+                        }} 
+                        className="w-full bg-green-600 text-white py-3 rounded-xl font-bold shadow-lg hover:bg-green-700 transition-transform active:scale-95"
+                      >
+                        Complete
+                      </button>
+                   </div>
+               )}
+
+               <button onClick={() => setViewingTask(null)} className="w-full text-gray-400 text-xs font-bold py-2 hover:text-gray-600">
+                  Dismiss
                </button>
             </div>
          </div>
