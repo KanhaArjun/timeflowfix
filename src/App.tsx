@@ -807,7 +807,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   fixedPool.forEach(fp => {
       if (!fp.fixedTime) return;
       // Using existing helper parseTimeStr to safely get "HH:MM"
-      const parts = parseTimeStr(fp.fixedTime).split(':');
+      const parts = parseTimeStr(fp.fixedTime || '').split(':');
       if (parts.length !== 2) return;
       
       const start = new Date(targetDate);
@@ -894,7 +894,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   // We strictly sort the fixed pool by time so we find the *earliest* seed first.
   fixedPool.sort((a, b) => {
       if (!a.fixedTime || !b.fixedTime) return 0;
-      return parseTimeStr(a.fixedTime).localeCompare(parseTimeStr(b.fixedTime));
+      return parseTimeStr(a.fixedTime || '').localeCompare(parseTimeStr(b.fixedTime || ''));
   });
 
   const newlyBatchedTasks: ActiveTaskWrapper[] = [];
@@ -907,7 +907,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
       if (!context) return; // This fixed task isn't a "Seed" (e.g. Lunch)
 
       // Calculate Seed End Time (Where the batch will start)
-      const seedParts = parseTimeStr(seedTask.fixedTime).split(':');
+      const seedParts = parseTimeStr(seedTask.fixedTime || '').split(':');
       const seedEnd = new Date(targetDate);
       seedEnd.setHours(parseInt(seedParts[0]), parseInt(seedParts[1]), 0, 0);
       seedEnd.setMinutes(seedEnd.getMinutes() + seedTask.estimatedDuration);
@@ -930,7 +930,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
               if (fixed.id === seedTask.id) return false; 
               if (!fixed.fixedTime) return false;
               
-              const fParts = parseTimeStr(fixed.fixedTime).split(':');
+              const fParts = parseTimeStr(fixed.fixedTime || '').split(':');
               const fStart = new Date(targetDate);
               fStart.setHours(parseInt(fParts[0]), parseInt(fParts[1]), 0, 0);
               const fEnd = fStart.getTime() + (fixed.estimatedDuration * 60000);
@@ -1008,7 +1008,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
 
   fixedPool.sort((a, b) => {
       if (!a.fixedTime) return 1; if (!b.fixedTime) return -1;
-      return parseTimeStr(a.fixedTime!).localeCompare(parseTimeStr(b.fixedTime!));
+      return parseTimeStr(a.fixedTime || '').localeCompare(parseTimeStr(b.fixedTime || ''));
   });
 
   let fixedLoad = 0; fixedPool.forEach(t => fixedLoad += t.estimatedDuration);
@@ -1332,7 +1332,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   // =========================================================================
   for (const fixedTask of fixedPool) {
     if (!fixedTask.fixedTime) continue;
-    const cleanFixedTime = parseTimeStr(fixedTask.fixedTime);
+    const cleanFixedTime = parseTimeStr(fixedTask.fixedTime || '');
     if (!cleanFixedTime.includes(':')) continue;
     const [h, m] = cleanFixedTime.split(':').map(Number);
     
