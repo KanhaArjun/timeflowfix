@@ -115,7 +115,7 @@ darkMode: boolean;
 interface ActiveTaskWrapper extends Partial<Goal>, Partial<SubGoal> {
   type: 'goal' | 'subgoal' | 'reward_block';
   parentId: string;
-  originalGoal?: Goal | any; // Any allows for mock goal structure for rewards
+  originalGoal?: Goal | any;
   score?: number;
   daysUntilDeadline?: number;
   estimatedDuration: number;
@@ -127,6 +127,7 @@ interface ActiveTaskWrapper extends Partial<Goal>, Partial<SubGoal> {
   isRevision?: boolean;
   revisionScore?: number;
   isAdaptive?: boolean;
+  reason?: string; // <--- This fixes the missing property error
 }
 
 interface ScheduleSlot {
@@ -1251,7 +1252,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
               const part2Duration = largeTask.estimatedDuration - part1Duration;
 
               // 1. Create "Part 1" (The Slice) to schedule NOW
-              const baseTitle = largeTask.title.replace(/ \(Part \d+\)/, '');
+              const baseTitle = (largeTask.title || 'Untitled').replace(/ \(Part \d+\)/, '');
               const part1: ActiveTaskWrapper = {
                   ...largeTask,
                   estimatedDuration: part1Duration,
@@ -1493,12 +1494,12 @@ export default function TimeFlowApp() {
 
 // PERFORMANCE FIX: Decouple the Scheduler from the Render Loop
   const [dailyData, setDailyData] = useState<{ schedule: ScheduleSlot[], completedIds: string[], hobbyStatus: 'none' | 'selected' | 'rest' }>({ schedule: [], completedIds: [], hobbyStatus: 'none' });
-  const [isScheduling, setIsScheduling] = useState(false);
+  
 
   useEffect(() => {
       // 1. Setup the Debounce Timer
       const handler = setTimeout(() => {
-          setIsScheduling(true);
+
           
           // Wrap in a promise to allow the UI to breathe before crunching numbers
           Promise.resolve().then(() => {
@@ -1521,7 +1522,7 @@ export default function TimeFlowApp() {
               const result = generateScheduleForDate(now, data, categoryTendencies, undefined, undefined, frozenOrder);
               
               setDailyData(result);
-              setIsScheduling(false);
+
           });
       }, 600); // Wait 600ms after the last data change
 
