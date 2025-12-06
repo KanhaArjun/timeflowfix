@@ -904,7 +904,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   // 3. The Magnet Loop
   fixedPool.forEach(seedTask => {
       if (!seedTask.fixedTime) return;
-      const context = getTaskContext(seedTask.title);
+      const context = getTaskContext(seedTask.title || '');
       if (!context) return; // This fixed task isn't a "Seed" (e.g. Lunch)
 
       // Calculate Seed End Time (Where the batch will start)
@@ -917,8 +917,8 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
 
       // Find Candidates: Flexible tasks with the SAME context
       const candidates = flexiblePool.filter(t => 
-          !batchedTaskIds.has(t.id) && 
-          getTaskContext(t.title) === context
+          !batchedTaskIds.has(t.id || '') && 
+          getTaskContext(t.title || '') === context
       );
 
       candidates.forEach(candidate => {
@@ -950,7 +950,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
               candidate.reason = `Batch: ${context.toUpperCase()} (w/ ${seedTask.title})`;
               
               newlyBatchedTasks.push(candidate);
-              batchedTaskIds.add(candidate.id);
+              if(candidate.id) batchedTaskIds.add(candidate.id);
 
               // Move cursor forward so next task stacks after this one
               batchCursor += candDurationMs;
@@ -961,7 +961,7 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   // 4. Finalize: Move batched tasks from Flexible to Fixed
   if (newlyBatchedTasks.length > 0) {
       fixedPool.push(...newlyBatchedTasks);
-      flexiblePool = flexiblePool.filter(t => !batchedTaskIds.has(t.id));
+      flexiblePool = flexiblePool.filter(t => !batchedTaskIds.has(t.id || ''));
   }
   // =========================================================================
   // END IMPLEMENTATION
