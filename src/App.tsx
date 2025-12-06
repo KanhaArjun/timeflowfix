@@ -545,8 +545,16 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   (data.rewardBlocks || []).forEach(block => {
      const wasSkipped = data.logs.some(l => l.goalId === block.id && l.action === 'skipped' && new Date(l.timestamp).toDateString() === targetDate.toDateString());
      if (wasSkipped) return;
-     if (block.startTime < dayEnd.getTime() && block.endTime > dayStart.getTime()) {
-        const effectiveStart = Math.max(block.startTime, dayStart.getTime());
+     const isRecurring = block.repetition && block.repetition !== 'once';
+// For recurring: simply check if it has started yet (start <= today)
+// For non-recurring: strict overlap check (must touch today)
+const isRelevant = isRecurring 
+    ? block.startTime <= dayEnd.getTime() 
+    : (block.startTime < dayEnd.getTime() && block.endTime > dayStart.getTime());
+
+if (isRelevant) {
+   // For recurring tasks, we base the effective start on Today, not the original past date
+   const effectiveStart = isRecurring ? dayStart.getTime() : Math.max(block.startTime, dayStart.getTime());
         let shouldSchedule = false;
         if (block.repetition === 'once' || !block.repetition) shouldSchedule = true;
         else {
@@ -2243,8 +2251,8 @@ const [timing, setTiming] = useState(60);
     return null;
 };
 
-                 const start = parseDateTime(startStr);
-                 const end = parseDateTime(endStr);
+                 const start = parseDateTime(startStr || '');
+                 const end = parseDateTime(endStr || '');
                  
                  if (start && end && !isNaN(start.getTime()) && !isNaN(end.getTime())) {
                      let finalRep: Repetition = 'once';
