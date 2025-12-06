@@ -155,7 +155,10 @@ const generateId = (existingIds?: Set<string>): string => {
 
 const DIFFICULTY_SCORE = { easy: 10, medium: 20, hard: 35 };
 const PRIORITY_WEIGHT = { low: 1, medium: 1.5, high: 2, critical: 3 };
-const PRIORITY_LEAD_DAYS = { low: 1, medium: 2, high: 4, critical: 6 }; 
+// UPDATE: Procrastination Killer Buffers
+// We shift the "Effective Deadline" back by this many days.
+// Low Priority MUST be done 3 days early. High Priority 2 weeks early.
+const PRIORITY_LEAD_DAYS = { low: 3, medium: 7, high: 14, critical: 14 };
 
 const RESURRECTION_BOOST = 200; 
 const JACKPOT_BONUS = 1000;
@@ -248,10 +251,16 @@ const sanitizeUserData = (data: any): UserData => {
     };
   }) : [];
 
-  const logs = Array.isArray(data?.logs) ? data.logs.map((l: any) => ({
-    ...l,
-    goalId: idMap.get(l.goalId) || l.goalId,
-    subgoalId: idMap.get(l.subgoalId) || l.subgoalId
+  // PERFORMANCE FIX: Auto-archive (prune) logs older than 90 days
+  // This prevents the log array from growing infinitely and freezing the scheduler.
+  const ARCHIVE_CUTOFF = Date.now() - (90 * 24 * 60 * 60 * 1000);
+  
+  const logs = Array.isArray(data?.logs) ? data.logs
+    .filter((l: any) => (l.timestamp || 0) > ARCHIVE_CUTOFF) // <--- The Filter
+    .map((l: any) => ({
+      ...l,
+      goalId: idMap.get(l.goalId) || l.goalId,
+      subgoalId: idMap.get(l.subgoalId) || l.subgoalId
   })) : [];
 
 const habits = Array.isArray(data?.habits) ? data.habits.map((h: any) => ({
@@ -601,40 +610,167 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
        if (effectiveRepetition === 'specific_days' && goal.repeatSpecificDays && !goal.repeatSpecificDays.includes(todayDay)) return;
     }
 
+    // --- SMART THROTTLE LOGIC (Look-Ahead Capacity Distribution) ---
     const subgoals = Array.isArray(goal.subgoals) ? goal.subgoals : [];
-    let firstIncompleteSubgoal: SubGoal | null = null;
-    for (const sg of subgoals) { if (!sg.completed && !simulatedCompletedIds.has(sg.id)) { firstIncompleteSubgoal = sg; break; } }
-    if (subgoals.length > 0 && !firstIncompleteSubgoal) return;
+    
+    // 1. Get all candidates
+    const incompleteSubgoals = subgoals.filter(sg => !sg.completed && !simulatedCompletedIds.has(sg.id));
+    if (subgoals.length > 0 && incompleteSubgoals.length === 0) return;
 
-    const items = firstIncompleteSubgoal ? [firstIncompleteSubgoal] : (subgoals.length === 0 ? [goal] : []);
+    // 2. Determine Batch Size
+    let batchSize = 1; // Default: Steady heartbeat (1 per day)
+    
+    const deadline = new Date(goal.deadline);
+    // Normalize to Midnight for accurate day-scanning
+    const deadlineDay = new Date(deadline); deadlineDay.setHours(0,0,0,0);
+    const todayDayCalc = new Date(targetDate); todayDayCalc.setHours(0,0,0,0);
+
+    const effectiveDeadline = new Date(deadlineDay);
+    effectiveDeadline.setDate(effectiveDeadline.getDate() - PRIORITY_LEAD_DAYS[goal.priority || 'medium']);
+
+    // ACTIVATE ONLY IF: We are past the "Safety Buffer" (Procrastination Mode)
+    if (todayDayCalc.getTime() > effectiveDeadline.getTime()) {
+        
+        let totalFreeMinutes = 0;
+        let todayFreeMinutes = 0;
+        
+        // Scan from Today -> Real Deadline to find where the free time is hiding
+        const scanCursor = new Date(todayDayCalc);
+        
+        // Safety Break: Don't scan more than 60 days to prevent lag on distant deadlines
+        let safetyLoop = 0;
+
+        while (scanCursor.getTime() <= deadlineDay.getTime() && safetyLoop < 60) {
+            const dateStr = scanCursor.toISOString().split('T')[0];
+            const scanDayNum = scanCursor.getDay();
+
+            // A. Calculate Base Capacity (Work End - Work Start)
+            let dailyCapacity = (data.settings.workEndHour - data.settings.workStartHour) * 60;
+            if (dailyCapacity < 0) dailyCapacity += (24 * 60); // Handle overnight shifts
+            
+            // B. Subtract Known Fixed Tasks (The "Blocked" Time)
+            const dailyFixedLoad = (data.goals || []).reduce((sum, g) => {
+                if (g.fixedDate === dateStr && !g.completed && !simulatedCompletedIds.has(g.id)) {
+                    return sum + (g.timing || 60);
+                }
+                return sum;
+            }, 0);
+
+            // C. Subtract Reward Blocks (Repeating or Specific)
+            const rewardLoad = (data.rewardBlocks || []).reduce((sum, r) => {
+                 let active = false;
+                 if (r.repetition === 'daily') active = true;
+                 if (r.repetition === 'weekdays' && scanDayNum >= 1 && scanDayNum <= 5) active = true;
+                 if (r.repetition === 'weekends' && (scanDayNum === 0 || scanDayNum === 6)) active = true;
+                 if (r.repetition === 'specific_days' && r.repeatSpecificDays?.includes(scanDayNum)) active = true;
+                 if (r.repetition === 'weekly' && new Date(r.startTime).getDay() === scanDayNum) active = true; // Simple weekly check
+
+                 if (active) return sum + ((r.endTime - r.startTime)/60000);
+                 return sum;
+            }, 0);
+
+            // Net Free Time for this specific day
+            const netFree = Math.max(0, dailyCapacity - dailyFixedLoad - rewardLoad);
+
+            if (scanCursor.getTime() === todayDayCalc.getTime()) {
+                todayFreeMinutes = netFree;
+            }
+            totalFreeMinutes += netFree;
+
+            // Next Day
+            scanCursor.setDate(scanCursor.getDate() + 1);
+            safetyLoop++;
+        }
+
+        // 3. Calculate Share: (Today's Free Time / Total Remaining Free Time)
+        // If today is totally blocked (0 free mins), we schedule 0 subtasks (defer to tomorrow).
+        const ratio = totalFreeMinutes > 0 ? (todayFreeMinutes / totalFreeMinutes) : 0;
+        
+        // Apply Ratio to remaining subtasks
+        batchSize = Math.ceil(incompleteSubgoals.length * ratio);
+        
+        // Edge Case: If today is the Deadline Day, we MUST do everything remaining, 
+        // regardless of capacity calculations (The "At All Costs" rule).
+        if (todayDayCalc.getTime() === deadlineDay.getTime()) {
+             batchSize = incompleteSubgoals.length;
+        }
+
+        // Safety Cap (unless critical) to prevent UI explosion
+        if (goal.priority !== 'critical' && batchSize > 8) batchSize = 8;
+    }
+
+    // 4. Select the Items
+    const items = subgoals.length > 0 
+        ? incompleteSubgoals.slice(0, batchSize) 
+        : [goal];
     items.forEach((item) => {
       const deadline = new Date(goal.deadline);
       const effectiveDeadline = new Date(deadline);
-      effectiveDeadline.setDate(effectiveDeadline.getDate() - PRIORITY_LEAD_DAYS[goal.priority || 'medium']);
+      // Ensure we use the correct constant name from source line 30
+      effectiveDeadline.setDate(effectiveDeadline.getDate() - (PRIORITY_LEAD_DAYS[goal.priority || 'medium'] || 7));
       
       if (!goal.fixedTime && !goal.fixedDate) {
           if (goal.priority !== 'critical' && ((effectiveDeadline.getTime() - targetDate.getTime()) / 86400000) > 14 && !isRevision && !isAdaptive) return;
       }
       
+      // --- SCORING LOGIC ---
       let urgencyScore = PRIORITY_WEIGHT[goal.priority || 'medium'] * 20;
+      
+      // 1. Resurrection Boost
       if (((new Date().getTime() - goal.createdAt) > 86400000 && !goal.wasStarted) || goal.wasStarted) urgencyScore += RESURRECTION_BOOST;
+      
+      // 2. Deadline Stress
       urgencyScore += getStressScore(effectiveDeadline, targetDate);
-      urgencyScore += adaptiveBoost; 
+      
+      // 3. TASK DENSITY CALCULATION
+      const remainingSubcount = goal.subgoals ? goal.subgoals.filter(s => !s.completed).length : 1;
+      const daysUntilRaw = (effectiveDeadline.getTime() - targetDate.getTime()) / 86400000;
+      const safeDays = Math.max(0.5, daysUntilRaw); 
+      
+      const taskDensity = remainingSubcount / safeDays;
+      if (taskDensity >= 1.0) urgencyScore += (taskDensity * 30);
+      else urgencyScore += (taskDensity * 10);
+
+      urgencyScore += adaptiveBoost;
       if (isRevision) urgencyScore = 40 + Math.min(revisionScore * 20, 100);
 
       let baseDuration = (('timing' in item && typeof item.timing === 'number') ? item.timing : (goal.timing || 60));
       if (!('timing' in item) && subgoals.length > 0) baseDuration = Math.ceil((goal.timing || 60) / subgoals.length);
-      
       const adaptiveDuration = Math.ceil(baseDuration * (categoryVelocities[goal.categoryId] || 1));
       const diff = ('difficulty' in item && item.difficulty) ? item.difficulty : goal.difficulty;
-      
+
+      // ✅ FINAL ROBUST FIX: Dual-Property Type Guard
+      // A SubGoal is an object with a title, but NO categoryId AND NO deadline.
+      const isSubgoal = typeof item === 'object' 
+          && item !== null 
+          && 'title' in item 
+          && !('categoryId' in item) 
+          && !('deadline' in item);
+
+      // ✅ DEFENSIVE: Ensure ID exists
+      if (!item.id) {
+         (item as any).id = generateId();
+         console.warn("Recovered missing ID for scheduler item:", item);
+      }
+
       const taskObj: ActiveTaskWrapper = {
-        type: firstIncompleteSubgoal ? 'subgoal' : 'goal', id: item.id, parentId: goal.id, originalGoal: goal,
-        title: firstIncompleteSubgoal ? `${goal.title}: ${(item as SubGoal).title}` : goal.title,
-        score: urgencyScore, daysUntilDeadline: (deadline.getTime() - targetDate.getTime()) / 86400000,
-        estimatedDuration: adaptiveDuration, difficulty: diff || 'medium', fixedTime: goal.fixedTime,
-        currentContextScore: 0, isResurrected: goal.wasStarted, isRevision, isAdaptive
+        type: isSubgoal ? 'subgoal' : 'goal', 
+        id: item.id, 
+        parentId: goal.id, 
+        originalGoal: goal,
+        title: isSubgoal ? `${goal.title}: ${(item as SubGoal).title}` : goal.title,
+        score: urgencyScore, 
+        // Fixed math order of operations
+        daysUntilDeadline: (deadline.getTime() - targetDate.getTime()) / 86400000,
+        estimatedDuration: adaptiveDuration, 
+        difficulty: diff || 'medium', 
+        fixedTime: goal.fixedTime,
+        currentContextScore: 0, 
+        isResurrected: goal.wasStarted, 
+        isRevision, 
+        isAdaptive
       };
+      
       if (goal.fixedTime) fixedPool.push(taskObj); else flexiblePool.push(taskObj);
     });
   });
@@ -643,6 +779,232 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
   const hobbyResult = selectDailyHobby(data.logs, Array.isArray(data.goals) ? data.goals : [], targetDate, simulatedCompletedIds);
   if (hobbyResult.status === 'selected' && hobbyResult.hobby) flexiblePool.push(hobbyResult.hobby);
   const hobbyStatus = hobbyResult.status;
+
+// IMPLEMENTATION: DEADLINE BACK-CALCULATION (OPTIMIZED v2)
+  // =========================================================================
+  
+  // 1. Identify Anchors: Filter tasks that are High/Critical AND Due Today
+  const criticalTasksToBackCalc: ActiveTaskWrapper[] = [];
+  flexiblePool = flexiblePool.filter(task => {
+    const isHighPriority = task.originalGoal?.priority === 'critical' || task.originalGoal?.priority === 'high';
+    const isDueToday = (task.daysUntilDeadline || 0) <= 0.5; 
+
+    if (isHighPriority && isDueToday) {
+      criticalTasksToBackCalc.push(task);
+      return false; 
+    }
+    return true; 
+  });
+
+  // IMPROVEMENT 1: Sort by Duration Descending (Longest First)
+  // This prevents small 15m tasks from fragmenting the schedule and blocking a 2h task.
+  criticalTasksToBackCalc.sort((a, b) => b.estimatedDuration - a.estimatedDuration);
+
+  // IMPROVEMENT 2: Pre-calculate Blocked Ranges (Timestamp Optimization)
+  // Instead of parsing "HH:MM" strings inside the while loop, we convert everything to timestamps once.
+  const blockedRanges: { start: number, end: number }[] = [];
+  
+  fixedPool.forEach(fp => {
+      if (!fp.fixedTime) return;
+      // Using existing helper parseTimeStr to safely get "HH:MM"
+      const parts = parseTimeStr(fp.fixedTime).split(':');
+      if (parts.length !== 2) return;
+      
+      const start = new Date(targetDate);
+      start.setHours(parseInt(parts[0]), parseInt(parts[1]), 0, 0);
+      const end = start.getTime() + (fp.estimatedDuration * 60000);
+      blockedRanges.push({ start: start.getTime(), end });
+  });
+
+  // 2. Reverse Scan Algorithm
+  criticalTasksToBackCalc.forEach(task => {
+      const durationMs = task.estimatedDuration * 60000;
+      
+      // Start scanning from Work End Time
+      let scanCursorEnd = new Date(workEnd); 
+      let scanCursorStart = new Date(scanCursorEnd.getTime() - durationMs);
+      let slotFound = false;
+      const dayStartLimit = new Date(workStart); 
+
+      // Fast Collision Check (Number Comparison vs String Parsing)
+      const checkCollision = (s: number, e: number) => {
+          return blockedRanges.some(range => {
+              // Overlap logic: StartA < EndB && EndA > StartB
+              return (s < range.end && e > range.start);
+          });
+      };
+
+      while (scanCursorStart >= dayStartLimit) {
+          if (!checkCollision(scanCursorStart.getTime(), scanCursorEnd.getTime())) {
+              slotFound = true;
+              break; 
+          }
+
+          // Step back by 15 mins if blocked
+          scanCursorEnd = new Date(scanCursorEnd.getTime() - (15 * 60000));
+          scanCursorStart = new Date(scanCursorEnd.getTime() - durationMs);
+      }
+
+      if (slotFound) {
+          // IMPROVEMENT 3: Immediate Variable Update
+          // We push the new slot to blockedRanges so the NEXT task in this loop respects it.
+          blockedRanges.push({ start: scanCursorStart.getTime(), end: scanCursorEnd.getTime() });
+
+          const h = scanCursorStart.getHours().toString().padStart(2, '0');
+          const m = scanCursorStart.getMinutes().toString().padStart(2, '0');
+          
+          task.fixedTime = `${h}:${m}`;
+          task.reason = "Critical Path Lock"; 
+          fixedPool.push(task);
+      } else {
+          // If no slot fits, return to flexible pool
+          flexiblePool.push(task); 
+      }
+  });
+//======================================================================================================
+
+// =========================================================================
+  // IMPLEMENTATION: AUTOMATIC CONTEXT BATCHING (MAGNETIC PULL)
+  // =========================================================================
+  
+  // 1. Define Context Buckets (Keywords to look for)
+  const batchContexts: Record<string, string[]> = {
+      // ACADEMIC & STUDY
+      'study': ['study', 'revise', 'read', 'learn', 'chapter', 'textbook', 'notes', 'flashcard', 'memorize', 'exam', 'quiz', 'test'],
+      'college': ['assignment', 'homework', 'lecture', 'lab', 'project', 'paper', 'essay', 'report', 'thesis', 'submission', 'deadline', 'canvas', 'blackboard', 'portal'],
+      
+      // TECHNICAL
+      'programming': ['code', 'debug', 'develop', 'git', 'frontend', 'backend', 'api', 'database', 'deploy', 'algo', 'react', 'node', 'script', 'terminal'],
+      
+      // GENERAL WORK
+      'communication': ['call', 'phone', 'email', 'outreach', 'zoom', 'meeting', 'sync', 'message', 'slack', 'discord', 'chat'],
+      'admin': ['admin', 'invoice', 'organize', 'review', 'plan', 'file', 'pay', 'registration', 'form'],
+      'writing': ['write', 'draft', 'edit', 'blog', 'post', 'copy']
+  };
+
+  const getTaskContext = (title: string) => {
+      const lower = title.toLowerCase();
+      for (const [ctx, keywords] of Object.entries(batchContexts)) {
+          if (keywords.some(k => lower.includes(k))) return ctx;
+      }
+      return null;
+  };
+
+  // 2. Prepare for Batching
+  // We strictly sort the fixed pool by time so we find the *earliest* seed first.
+  fixedPool.sort((a, b) => {
+      if (!a.fixedTime || !b.fixedTime) return 0;
+      return parseTimeStr(a.fixedTime).localeCompare(parseTimeStr(b.fixedTime));
+  });
+
+  const newlyBatchedTasks: ActiveTaskWrapper[] = [];
+  const batchedTaskIds = new Set<string>();
+
+  // 3. The Magnet Loop
+  fixedPool.forEach(seedTask => {
+      if (!seedTask.fixedTime) return;
+      const context = getTaskContext(seedTask.title);
+      if (!context) return; // This fixed task isn't a "Seed" (e.g. Lunch)
+
+      // Calculate Seed End Time (Where the batch will start)
+      const seedParts = parseTimeStr(seedTask.fixedTime).split(':');
+      const seedEnd = new Date(targetDate);
+      seedEnd.setHours(parseInt(seedParts[0]), parseInt(seedParts[1]), 0, 0);
+      seedEnd.setMinutes(seedEnd.getMinutes() + seedTask.estimatedDuration);
+
+      let batchCursor = seedEnd.getTime();
+
+      // Find Candidates: Flexible tasks with the SAME context
+      const candidates = flexiblePool.filter(t => 
+          !batchedTaskIds.has(t.id) && 
+          getTaskContext(t.title) === context
+      );
+
+      candidates.forEach(candidate => {
+          // COLLISION CHECK: Ensure we don't overwrite existing Fixed tasks OR new batches
+          const candDurationMs = candidate.estimatedDuration * 60000;
+          const proposedEnd = batchCursor + candDurationMs;
+
+          // Check against ALL fixed items (Original + Back-Calculated + Newly Batched)
+          const collision = [...fixedPool, ...newlyBatchedTasks].some(fixed => {
+              if (fixed.id === seedTask.id) return false; 
+              if (!fixed.fixedTime) return false;
+              
+              const fParts = parseTimeStr(fixed.fixedTime).split(':');
+              const fStart = new Date(targetDate);
+              fStart.setHours(parseInt(fParts[0]), parseInt(fParts[1]), 0, 0);
+              const fEnd = fStart.getTime() + (fixed.estimatedDuration * 60000);
+
+              // Overlap: (StartA < EndB) and (EndA > StartB)
+              return (batchCursor < fEnd && proposedEnd > fStart.getTime());
+          });
+
+          // If clean, SNAP IT!
+          if (!collision && proposedEnd <= workEnd.getTime()) {
+              const d = new Date(batchCursor);
+              const h = d.getHours().toString().padStart(2, '0');
+              const m = d.getMinutes().toString().padStart(2, '0');
+
+              candidate.fixedTime = `${h}:${m}`;
+              candidate.reason = `Batch: ${context.toUpperCase()} (w/ ${seedTask.title})`;
+              
+              newlyBatchedTasks.push(candidate);
+              batchedTaskIds.add(candidate.id);
+
+              // Move cursor forward so next task stacks after this one
+              batchCursor += candDurationMs;
+          }
+      });
+  });
+
+  // 4. Finalize: Move batched tasks from Flexible to Fixed
+  if (newlyBatchedTasks.length > 0) {
+      fixedPool.push(...newlyBatchedTasks);
+      flexiblePool = flexiblePool.filter(t => !batchedTaskIds.has(t.id));
+  }
+  // =========================================================================
+  // END IMPLEMENTATION
+  // =========================================================================
+
+// =========================================================================
+  // IMPLEMENTATION: DYNAMIC CATCH-UP (URGENCY-BASED COMPRESSION)
+  // =========================================================================
+  
+  // 1. Calculate Available Capacity (Total Work Minutes - Fixed Meetings)
+  let totalFixedMinutes = 0;
+  fixedPool.forEach(t => totalFixedMinutes += t.estimatedDuration);
+  
+  const totalWorkMinutes = (workEnd.getTime() - workStart.getTime()) / 60000;
+  const availableCapacity = Math.max(0, totalWorkMinutes - totalFixedMinutes);
+
+  // 2. Identify "Must-Do" Tasks (Urgent Deadline OR Critical Priority)
+  const urgentTasks = flexiblePool.filter(t => {
+      const isCritical = t.originalGoal?.priority === 'critical' || t.originalGoal?.priority === 'high';
+      const isDueSoon = (t.daysUntilDeadline || 0) <= 1.5; // Due Today or Tomorrow
+      return isCritical || isDueSoon;
+  });
+
+  const urgentLoad = urgentTasks.reduce((sum, t) => sum + t.estimatedDuration, 0);
+
+  // 3. Trigger Compression ONLY if Urgent Tasks exceed Capacity
+  // logic: "I have 4 hours of URGENT work, but only 3 hours free. I must speed up."
+  if (urgentLoad > availableCapacity && availableCapacity > 0) {
+      // Calculate compression ratio (Safety cap: Don't compress below 70% of original time)
+      const compressionRatio = Math.max(0.70, availableCapacity / urgentLoad);
+      
+      urgentTasks.forEach(task => {
+          const oldDuration = task.estimatedDuration;
+          const newDuration = Math.ceil(oldDuration * compressionRatio);
+          
+          // Apply compression only to the URGENT tasks
+          if (newDuration < oldDuration) {
+              task.estimatedDuration = newDuration;
+              task.reason = `⚡ Speed Up (${Math.round((1 - compressionRatio) * 100)}%) - Tight Deadline`;
+              task.difficulty = 'hard'; 
+          }
+      });
+  }
+  // =========================================================================
 
   fixedPool.sort((a, b) => {
       if (!a.fixedTime) return 1; if (!b.fixedTime) return -1;
@@ -658,19 +1020,136 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
     return false;
   });
 
+// =========================================================================
+  // IMPLEMENTATION: REMAINING WORK DENSITY (Day-Level)
+  // =========================================================================
+  
+  // 1. Calculate Day Density
+  // CORRECTED: Subtract fixedLoad so we don't count meeting times as "free work time"
+  const rawMinsRemaining = (workEnd.getTime() - simulationTime.getTime()) / 60000;
+  const minsRemainingInDay = Math.max(1, rawMinsRemaining - fixedLoad);
+  let currentLoadMins = flexiblePool.reduce((sum, t) => sum + t.estimatedDuration, 0);
+  let dayDensity = currentLoadMins / minsRemainingInDay;
+
+  // 2. Handle OVERLOAD (Density > 1.0) -> Bump tasks to Tomorrow
+  if (dayDensity > 1.0) {
+      // CORRECTED: Sort by ACTUAL SCORE (Low to High).
+      // This ensures that tasks with a high "Density Boost" (past effective deadline)
+      // are protected and stay at the bottom of the list (safe), 
+      // while low-score tasks float to the top to be bumped.
+      flexiblePool.sort((a, b) => (a.score || 0) - (b.score || 0));
+
+      // Remove tasks until density is manageable (~0.95)
+      while (dayDensity > 1.0 && flexiblePool.length > 0) {
+          // Find the first candidate that isn't safely locked by the REAL deadline
+          // (We use 1.0 days as the "Hard Lock" - if it's due tomorrow, NEVER bump it)
+          const candidateIndex = flexiblePool.findIndex(t => 
+             (t.daysUntilDeadline || 0) > 1 && 
+             t.originalGoal?.priority !== 'critical'
+          );
+
+          if (candidateIndex !== -1) {
+              const bumped = flexiblePool.splice(candidateIndex, 1)[0];
+              currentLoadMins -= bumped.estimatedDuration;
+              dayDensity = currentLoadMins / minsRemainingInDay;
+              // Ideally log this internally or show a toast, but for now we just remove it from view
+          } else {
+              break; // Only critical stuff left, we have to suffer
+          }
+      }
+  }
+
+  // 3. Handle HIGH PRESSURE (Density > 0.8) -> Compress Gaps
+  if (dayDensity > 0.8) {
+      flexiblePool.forEach(task => {
+          // We mark them as 'hard' to trigger the "Strain" logic in the scoring section
+          // which effectively reduces gaps/breaks in the schedule generation loop
+          task.difficulty = 'hard';
+          task.reason = `⚠️ High Density (${Math.floor(dayDensity * 100)}%)`;
+      });
+  }
+
+  // 4. Handle LOW PRESSURE (Density < 0.5) -> Pull from Tomorrow
+  if (dayDensity < 0.5) {
+      // Look for tasks due soon (next 2 days) that aren't in the pool yet
+      const tomorrowStart = new Date(targetDate); tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+      const lookaheadLimit = new Date(targetDate); lookaheadLimit.setDate(lookaheadLimit.getDate() + 3);
+      
+      const futureCandidates: ActiveTaskWrapper[] = [];
+      
+      (Array.isArray(data.goals) ? data.goals : []).forEach(g => {
+         if (g.completed || simulatedCompletedIds.has(g.id) || g.categoryId === HOBBIES_CAT_ID) return;
+         // Skip if already in pool
+         if (flexiblePool.some(t => t.parentId === g.id) || fixedPool.some(t => t.parentId === g.id)) return;
+
+         const deadline = new Date(g.deadline);
+         // If deadline is close OR it has high task density (Part 2 logic)
+         const remainingSubs = g.subgoals?.filter((s: any) => !s.completed).length || 1;
+         const subDensity = remainingSubs / (Math.max(1, (deadline.getTime() - new Date().getTime())/86400000));
+         
+         if (deadline <= lookaheadLimit || subDensity > 0.8) {
+             const subgoals = g.subgoals || [];
+             const firstInc = subgoals.find((s: any) => !s.completed);
+             const item = firstInc || g;
+             
+             futureCandidates.push({
+                 type: firstInc ? 'subgoal' : 'goal',
+                 id: item.id,
+                 parentId: g.id,
+                 originalGoal: g,
+                 title: firstInc ? `${g.title}: ${(item as SubGoal).title}` : g.title,
+                 estimatedDuration: ('timing' in item) ? (item.timing || 60) : 60,
+                 difficulty: g.difficulty,
+                 reason: "🚀 Pulled fwd (Low Density)",
+                 score: 50 // Base score to ensure it slots in
+             });
+         }
+      });
+
+      // Add tasks until we reach ~0.7 density
+      for (const cand of futureCandidates) {
+          if ((currentLoadMins + cand.estimatedDuration) / minsRemainingInDay > 0.7) break;
+          flexiblePool.push(cand);
+          currentLoadMins += cand.estimatedDuration;
+      }
+  }
+  // =========================================================================
+
   // --- AUTOMATED BALANCING + SCORING ---
   let accumulatedStrain = 0; 
   let lastCategoryId = '';
   let consecutiveCategoryCount = 0;
 
   const fillGap = (endTimeLimit: Date) => {
-    while (simulationTime < endTimeLimit) {
+    // SAFETY: Prevent infinite loops with a max iteration counter
+    let safetyLoop = 0;
+
+    while (simulationTime < endTimeLimit && safetyLoop < 50) {
+      safetyLoop++;
+      
       const minsRemaining = Math.floor((endTimeLimit.getTime() - simulationTime.getTime()) / 60000);
+
+      // FIX: If gap is tiny (less than 5 mins), FORCE JUMP to the next task
+      // This is what prevents the crash between your 08:50 and 08:55 classes.
+      if (minsRemaining < 5) {
+          simulationTime = new Date(endTimeLimit);
+          break;
+      }
+
       const minThreshold = flexiblePool.some(t => t.estimatedDuration <= 10) ? 5 : 10;
-      if (minsRemaining < minThreshold && flexiblePool.every(t => t.estimatedDuration > minsRemaining)) break;
+
+      // If we have time, but no tasks fit:
+      if (minsRemaining < minThreshold && flexiblePool.every(t => t.estimatedDuration > minsRemaining)) {
+          // Jump to limit to close the gap cleanly
+          simulationTime = new Date(endTimeLimit);
+          break;
+      }
 
       // STRAIN CHECK
-      if (accumulatedStrain > 45) { 
+      // If Density is High (>0.8), we increase the threshold (60) to push harder before breaking.
+      const strainThreshold = dayDensity > 0.8 ? 60 : 45; 
+      
+      if (accumulatedStrain > strainThreshold) { 
          const breakEnd = new Date(simulationTime.getTime() + 15 * 60000);
          if (breakEnd > endTimeLimit) break;
          schedule.push({ id: `strain-break-${simulationTime.getTime()}`, startTime: formatTime(simulationTime), endTime: formatTime(breakEnd), type: 'break', reason: "Brain Reset" });
@@ -725,6 +1204,8 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
       // --- FROZEN vs DYNAMIC SORT ---
       if (frozenOrder && frozenOrder.length > 0) {
           const frozenTasks: ActiveTaskWrapper[] = [];
+          // FIX: Loop removed. We only run this logic ONCE.
+          
           const newTasks: ActiveTaskWrapper[] = [];
           const poolMap = new Map(flexiblePool.map(t => [t.id, t]));
           
@@ -732,19 +1213,105 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
               if (poolMap.has(id)) { frozenTasks.push(poolMap.get(id)!); poolMap.delete(id); }
           });
           poolMap.forEach(task => {
-              // High Priority cuts line
+              // High Priority cuts line (unless frozen)
               if (task.originalGoal?.priority === 'critical' || task.originalGoal?.priority === 'high') newTasks.push(task);
               else frozenTasks.push(task); 
           });
+          
           newTasks.sort((a, b) => (b.score || 0) - (a.score || 0));
           flexiblePool = [...newTasks, ...frozenTasks];
       } else {
           flexiblePool.sort((a, b) => (b.currentContextScore || 0) - (a.currentContextScore || 0));
       }
 
+      // =========================================================================
+      // IMPLEMENTATION: DOMINO RESCHEDULE (DISPLACEMENT DETECTOR)
+      // =========================================================================
+      
+      // 1. Find the first task that fits the remaining time gap
       let selectedTaskIndex = flexiblePool.findIndex(t => t.estimatedDuration <= minsRemaining);
-      if (selectedTaskIndex === -1) break;
+      
+// =========================================================================
+      // IMPLEMENTATION: INTELLIGENT TASK SPLITTING (TETRIS MODE)
+      // =========================================================================
+      
+      // If no task fits naturally, check if we can SLICE a larger task to fill the gap
+      // We only split if the gap is usable (>= 30 mins) to avoid micro-fragmentation.
+      if (selectedTaskIndex === -1 && minsRemaining >= 30) { 
+          // Find the highest priority task that is larger than the current gap
+          const splittableIndex = flexiblePool.findIndex(t => 
+              t.estimatedDuration > minsRemaining && 
+              !t.isHobby && // Don't split hobbies
+              t.type !== 'reward_block'
+          );
+
+          if (splittableIndex !== -1) {
+              const largeTask = flexiblePool[splittableIndex];
+              const part1Duration = minsRemaining;
+              const part2Duration = largeTask.estimatedDuration - part1Duration;
+
+              // 1. Create "Part 1" (The Slice) to schedule NOW
+              const baseTitle = largeTask.title.replace(/ \(Part \d+\)/, '');
+              const part1: ActiveTaskWrapper = {
+                  ...largeTask,
+                  estimatedDuration: part1Duration,
+                  title: `${baseTitle} (Part 1)`,
+                  reason: 'Split to fit available gap',
+                  // Create a temp ID so React renders it as a distinct block
+                  id: `${largeTask.id}_split_${Date.now()}` 
+              };
+
+              // 2. Update the "Remainder" (Part 2) in the pool for LATER
+              // We modify the task in place. The next loop iteration will see 
+              // this smaller version and fit it into the next available slot.
+              largeTask.estimatedDuration = part2Duration;
+              largeTask.title = `${baseTitle} (Part 2)`;
+              largeTask.reason = 'Resume where Part 1 left off';
+              
+              // Note: We do NOT remove largeTask from flexiblePool yet.
+              // It stays in the pool to be picked up in the next loop cycle.
+
+              // 3. Schedule Part 1 immediately
+              const taskEnd = new Date(simulationTime.getTime() + part1Duration * 60000);
+              schedule.push({ 
+                  id: part1.id!, 
+                  startTime: formatTime(simulationTime), 
+                  endTime: formatTime(taskEnd), 
+                  type: 'task', 
+                  task: part1 
+              });
+              
+              // Advance time
+              simulationTime = taskEnd;
+              accumulatedStrain += 10; // Splitting adds a small context-switching strain
+              
+              // Continue the loop immediately. 
+              // The `largeTask` (now Part 2) will be re-scored and re-sorted in the next iteration.
+              continue; 
+          }
+      }
+      // =========================================================================
+
+      if (selectedTaskIndex === -1) break; // Nothing fits, leave a break
+
+      // 2. DISPLACEMENT CHECK (The "Option B" Logic)
+      // If selectedTaskIndex > 0, it means we skipped the task at index 0 (your planned next task)
+      // because the gap was too small (e.g. previous task ran late).
+      if (selectedTaskIndex > 0) {
+          // Identify the task that got "bumped"
+          const bumpedTask = flexiblePool[0]; 
+          
+          // Tag it so the UI shows why it moved to the end of the day
+          // We only tag it if it doesn't already have a high-priority reason
+          if (!bumpedTask.reason && !bumpedTask.fixedTime) {
+              bumpedTask.reason = "Bumped: Gap too small";
+              // Optional: You could slightly penalize its score to push it later if desired
+              // bumpedTask.score = (bumpedTask.score || 0) - 5; 
+          }
+      }
+      
       const bestTask = flexiblePool[selectedTaskIndex];
+      // =========================================================================
       const taskEnd = new Date(simulationTime.getTime() + bestTask.estimatedDuration * 60000);
       schedule.push({ id: bestTask.id!, startTime: formatTime(simulationTime), endTime: formatTime(taskEnd), type: 'task', task: bestTask });
       completedInThisRun.push(bestTask.id!);
@@ -760,31 +1327,77 @@ const completedInThisRun: string[] = []; // <--- ADD THIS
     }
   };
 
+  // =========================================================================
+  // OPTIMIZED DOMINO LOGIC (Push vs Overlap)
+  // =========================================================================
   for (const fixedTask of fixedPool) {
     if (!fixedTask.fixedTime) continue;
     const cleanFixedTime = parseTimeStr(fixedTask.fixedTime);
     if (!cleanFixedTime.includes(':')) continue;
     const [h, m] = cleanFixedTime.split(':').map(Number);
-    const fixedStart = new Date(targetDate); fixedStart.setHours(h, m, 0, 0);
-    const fixedEnd = new Date(fixedStart.getTime() + fixedTask.estimatedDuration * 60000);
     
-    const isOngoing = fixedStart.getTime() < simulationTime.getTime() && fixedEnd.getTime() > simulationTime.getTime();
-    if (fixedStart < simulationTime && !isOngoing) {
-        if (fixedStart < viewStartTime) schedule.push({ id: fixedTask.id!, startTime: formatTime(fixedStart), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'passed', task: fixedTask, isFixed: true });
-        else {
-             schedule.push({ id: fixedTask.id!, startTime: formatTime(fixedStart), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'overlap', task: fixedTask, isFixed: true });
-             if (fixedEnd > simulationTime) { simulationTime = fixedEnd; accumulatedStrain = 0; }
-        }
+    // 1. Planned Start
+    let fixedStart = new Date(targetDate); 
+    fixedStart.setHours(h, m, 0, 0);
+    const originalEnd = new Date(fixedStart.getTime() + fixedTask.estimatedDuration * 60000);
+
+    // 2. CHECK: Is this task in the past?
+    if (originalEnd.getTime() <= viewStartTime.getTime()) {
+        schedule.push({ 
+            id: fixedTask.id!, 
+            startTime: formatTime(fixedStart), 
+            endTime: formatTime(originalEnd), 
+            type: fixedTask.type === 'reward_block' ? 'reward_block' : 'passed', 
+            task: fixedTask, 
+            isFixed: true 
+        });
         continue;
     }
-    if (isOngoing) {
-         schedule.push({ id: fixedTask.id!, startTime: formatTime(fixedStart), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'ongoing', task: fixedTask, isFixed: true });
-         simulationTime = fixedEnd; accumulatedStrain = 0; continue;
-    }
-    if (fixedStart > simulationTime) { fillGap(fixedStart); if (simulationTime < fixedStart) simulationTime = fixedStart; }
 
-    schedule.push({ id: fixedTask.id!, startTime: formatTime(simulationTime), endTime: formatTime(fixedEnd), type: fixedTask.type === 'reward_block' ? 'reward_block' : 'fixed', task: fixedTask, isFixed: true });
-    simulationTime = fixedEnd; accumulatedStrain = 0;
+    // 3. THE DOMINO TRIGGER
+    // If the planned start is earlier than the current "cursor", PUSH IT.
+    let isDominoPushed = false;
+let effectiveStart = new Date(fixedStart);
+
+// CHECK: Is this a "Hard" deadline? (e.g. Critical priority or explicitly marked)
+const isHardFixed = fixedTask.originalGoal?.priority === 'critical'; // OR check if it came from a calendar import
+
+if (fixedStart.getTime() < simulationTime.getTime()) {
+    if (isHardFixed) {
+        // OPTION A: Do not push. Force it to start at fixedStart (Visual Overlap)
+        effectiveStart = new Date(fixedStart);
+        // We do NOT set isDominoPushed = true;
+    } else {
+        // OPTION B: Soft Fixed (Gym, Lunch) -> Push it (Domino Effect)
+        effectiveStart = new Date(simulationTime); 
+        isDominoPushed = true;
+    }
+}
+
+    // 4. Fill Gap (If there is space before the task)
+    if (effectiveStart.getTime() > simulationTime.getTime()) { 
+         fillGap(effectiveStart);
+         if (simulationTime.getTime() < effectiveStart.getTime()) simulationTime = effectiveStart; 
+    }
+
+    // 5. Calculate New End
+    const fixedEnd = new Date(simulationTime.getTime() + fixedTask.estimatedDuration * 60000);
+    
+    // 6. Push to Schedule with Corrected Time
+    schedule.push({ 
+        id: fixedTask.id!, 
+        startTime: formatTime(simulationTime), // Use simulationTime (Effective Start)
+        endTime: formatTime(fixedEnd), 
+        // If pushed, we can mark it 'overlap' color for attention, or 'fixed' if you prefer cleaner look
+        type: fixedTask.type === 'reward_block' ? 'reward_block' : (isDominoPushed ? 'overlap' : 'fixed'), 
+        task: fixedTask, 
+        isFixed: true,
+        reason: isDominoPushed ? 'Domino Push ➡️' : fixedTask.reason 
+    });
+
+    // 7. Update Cursor to force the NEXT task to push as well
+    simulationTime = fixedEnd; 
+    accumulatedStrain = 0;
   }
   fillGap(workEnd); 
   return { schedule, completedIds: completedInThisRun, hobbyStatus: hobbyStatus as 'none' | 'selected' | 'rest' };
@@ -878,24 +1491,41 @@ export default function TimeFlowApp() {
     return { time: tendencies, day: dayTendencies, resistance };
   }, [data.logs, data.settings.workStartHour]);
 
-const dailyData = useMemo(() => {
-    const now = new Date();
-    if (now.getHours() < data.settings.workStartHour) {
-      now.setDate(now.getDate() - 1);
-    }
-    if (data.settings.simulatedDay !== undefined) {
-      const currentDay = now.getDay();
-      const diff = data.settings.simulatedDay - currentDay;
-      now.setDate(now.getDate() + diff);
-    }
-    
-    // LOAD FROZEN ORDER
-    const todayStr = now.toISOString().split('T')[0];
-    const frozenOrder = (data.todayScheduleOrder && data.todayScheduleOrder.date === todayStr) 
-        ? data.todayScheduleOrder.ids 
-        : null;
+// PERFORMANCE FIX: Decouple the Scheduler from the Render Loop
+  const [dailyData, setDailyData] = useState<{ schedule: ScheduleSlot[], completedIds: string[], hobbyStatus: 'none' | 'selected' | 'rest' }>({ schedule: [], completedIds: [], hobbyStatus: 'none' });
+  const [isScheduling, setIsScheduling] = useState(false);
 
-    return generateScheduleForDate(now, data, categoryTendencies, undefined, undefined, frozenOrder);
+  useEffect(() => {
+      // 1. Setup the Debounce Timer
+      const handler = setTimeout(() => {
+          setIsScheduling(true);
+          
+          // Wrap in a promise to allow the UI to breathe before crunching numbers
+          Promise.resolve().then(() => {
+              const now = new Date();
+              if (now.getHours() < data.settings.workStartHour) {
+                  now.setDate(now.getDate() - 1);
+              }
+              if (data.settings.simulatedDay !== undefined) {
+                  const currentDay = now.getDay();
+                  const diff = data.settings.simulatedDay - currentDay;
+                  now.setDate(now.getDate() + diff);
+              }
+
+              const todayStr = now.toISOString().split('T')[0];
+              const frozenOrder = (data.todayScheduleOrder && data.todayScheduleOrder.date === todayStr) 
+                  ? data.todayScheduleOrder.ids 
+                  : null;
+
+              // Run the Heavy Calculation
+              const result = generateScheduleForDate(now, data, categoryTendencies, undefined, undefined, frozenOrder);
+              
+              setDailyData(result);
+              setIsScheduling(false);
+          });
+      }, 600); // Wait 600ms after the last data change
+
+      return () => clearTimeout(handler);
   }, [data.goals, data.logs, data.settings, categoryTendencies, data.freeTimeUntil, data.categories, data.rewardBlocks, data.todayScheduleOrder]);
 
 
@@ -1442,7 +2072,7 @@ const [viewingTask, setViewingTask] = useState<ScheduleSlot | null>(null);
             <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 mb-6 mt-4"><div className="flex items-center justify-between"><div><h3 className="font-bold text-purple-900">Reward Mode</h3><p className="text-xs text-purple-700">Accumulate debt to take a break.</p></div><button onClick={toggleRewardMode} className={`px-4 py-2 rounded-lg font-bold shadow-sm transition-all ${rewardMode ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-white text-purple-600 hover:bg-purple-100'}`}>{rewardMode ? 'Stop' : 'Start'}</button></div>{showRewardInput && (<div className="mt-4 bg-white p-3 rounded-lg animate-in slide-in-from-top-2"><p className="text-xs font-bold text-gray-500 mb-2">Why are you taking a break?</p><input value={rewardReason} onChange={e => setRewardReason(e.target.value)} className="w-full p-2 border border-purple-200 rounded text-sm mb-2" placeholder="e.g. Brain fog..." /><div className="flex space-x-2"><button onClick={() => { setShowRewardInput(false); setRewardReason(''); }} className="flex-1 py-2 bg-gray-100 text-gray-600 rounded text-xs font-bold">Cancel</button><button disabled={!rewardReason} onClick={confirmRewardMode} className="flex-1 py-2 bg-purple-600 text-white rounded text-xs font-bold disabled:opacity-50">Start Break</button></div></div>)}</div>
             {rewardMode ? (<div className="text-center py-10 opacity-75"><Coffee className="w-16 h-16 mx-auto text-purple-400 mb-4" /><h2 className="text-2xl font-bold text-gray-700">Enjoy your break!</h2></div>) : nextTask ? (<div className="bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100 relative"><div className={`h-2 w-full ${nextTask.originalGoal?.priority === 'critical' ? 'bg-red-500' : 'bg-blue-500'}`} /><div className="p-6"><div className="flex justify-between items-start mb-4"><CategoryBadge catId={nextTask.originalGoal?.categoryId || ''} data={data} />{nextTaskSlot?.isFixed && <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded font-bold">Fixed {nextTaskSlot.startTime}</span>}{nextTaskSlot?.type === 'ongoing' && <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded font-bold ml-2 flex items-center animate-pulse"><Play className="w-3 h-3 mr-1"/> Ongoing</span>}{nextTaskSlot?.type === 'overlap' && <span className="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded font-bold ml-2 flex items-center"><AlertOctagon className="w-3 h-3 mr-1"/> Overlap</span>}{nextTask.isAdaptive && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded font-bold ml-2 flex items-center"><Zap className="w-3 h-3 mr-1"/> Adaptive</span>}{nextTask.isRevision && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold ml-2 flex items-center"><BookOpen className="w-3 h-3 mr-1"/> Rev</span>}</div><h2 className="text-2xl font-bold text-gray-800 mb-2">{nextTask.title}</h2><div className="flex items-center text-sm text-gray-500 mb-6"><Clock className="w-4 h-4 mr-1"/> {nextTask.estimatedDuration}m<span className="mx-2">•</span><AlertTriangle className="w-4 h-4 mr-1 text-orange-500"/> {nextTask.difficulty}</div>{actionType ? (<div className="space-y-2 bg-gray-50 p-3 rounded-lg animate-in fade-in"><p className="text-xs font-bold text-gray-500">Why are you {actionType}ing?</p><input value={actionReason} onChange={e => setActionReason(e.target.value)} className="w-full p-2 border rounded text-sm" placeholder="Reason..." /><div className="flex space-x-2"><button onClick={() => { setActionType(null); setActionReason(''); }} className="flex-1 py-2 bg-gray-200 rounded text-xs font-bold">Cancel</button><button disabled={!actionReason} onClick={() => { if(actionType === 'snooze') handleSnoozeTask(nextTask, actionReason); else handleSkipTask(nextTask, actionReason); setActionType(null); setActionReason(''); }} className="flex-1 py-2 bg-red-500 text-white rounded text-xs font-bold disabled:opacity-50">Confirm</button></div></div>) : (<div className="grid grid-cols-4 gap-2"><button onClick={() => startTask(nextTask)} className="col-span-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold text-sm flex items-center justify-center shadow-lg"><Play className="w-4 h-4 mr-2" /> Start</button><button onClick={() => setActionType('snooze')} disabled={nextTask.type === 'reward_block'} className="bg-orange-50 text-orange-600 border border-orange-200 rounded-xl font-bold text-xs hover:bg-orange-100 disabled:opacity-50">Snooze</button><button onClick={() => setActionType('skip')} className="bg-gray-50 text-gray-600 border border-gray-200 rounded-xl font-bold text-xs hover:bg-gray-100">Skip</button></div>)}</div></div>) : (<div className="text-center py-20 text-gray-400"><CheckCircle className="w-16 h-16 mx-auto mb-4" /><h2 className="text-2xl font-bold text-gray-300">All caught up!</h2><p>Enjoy your free time.</p></div>)}
             <div className="mt-8"><h3 className="text-lg font-bold text-gray-800 mb-4">Today's Roadmap</h3><div className="space-y-4">{dailySchedule.map((slot, idx) => (<div 
-  key={idx} 
+  key={slot.id} 
   onClick={() => setViewingTask(slot)} // <--- CLICK HANDLER
   className={`flex items-start cursor-pointer transition-colors hover:bg-gray-50/50 rounded-lg ${slot.type === 'passed' ? 'opacity-50 grayscale' : ''}`}
 ><div className="w-16 text-xs font-bold text-gray-400 pt-1">{slot.startTime}</div><div className={`flex-1 p-3 rounded-xl border ${slot.type === 'break' ? 'bg-green-50 border-green-100' : slot.type === 'overlap' ? 'bg-orange-50 border-orange-200' : (slot.type === 'reward_block' || slot.type === 'ongoing') ? 'bg-purple-50 border-purple-100' : 'bg-white border-gray-100 shadow-sm'}`}>{slot.type === 'break' ? <span className="text-green-700 font-bold flex items-center"><Coffee className="w-4 h-4 mr-2"/> {slot.reason}</span> : (slot.type === 'reward_block' || slot.type === 'ongoing') ? <span className="text-purple-700 font-bold flex items-center"><Gift className="w-4 h-4 mr-2"/> {slot.task?.title} {slot.type === 'ongoing' && <span className="text-xs bg-purple-200 text-purple-800 ml-2 px-1 rounded">Active</span>}</span> : slot.type === 'passed' ? <div><div className="font-bold text-gray-500 line-through">{slot.task?.title}</div><div className="text-xs text-gray-400">Passed</div></div> : <div><div className="font-bold text-gray-700">{slot.task?.title}{slot.type === 'overlap' && <span className="text-xs text-orange-600 ml-2">(Overlap)</span>}{slot.task?.isHobby && <span className="text-xs text-pink-600 ml-2">🎨 Hobby</span>}{slot.task?.isRevision && <span className="text-xs text-indigo-600 ml-2">📚 Rev</span>}{slot.task?.isAdaptive && <span className="text-xs text-amber-600 ml-2">⚡ Adapt</span>}</div><div className="text-xs text-gray-400">{slot.task?.estimatedDuration}m • {slot.task?.difficulty}</div></div>}</div></div>))}</div></div>
